@@ -17,16 +17,23 @@ type TenantCacheCompositionQuerier interface {
 	AggregateTenantUsageCacheComposition(context.Context, dboverview.AggregateTenantUsageCacheCompositionParams) (dboverview.AggregateTenantUsageCacheCompositionRow, error)
 }
 
+// cacheComposition 把同窗 Token 拆成两条独立通道：prompt_cache_* 只算真正出站到上游的
+// 结算行；response_cache_replayed_* 是 L2 命中时原样回放给客户端、未再出站的 Token。
+// 同窗 totals 的提示缓存 Token 恒等于二者之和，运营面据此对账。
 type cacheComposition struct {
-	PromptCacheCreationTokens int64  `json:"prompt_cache_creation_tokens"`
-	PromptCacheReadTokens     int64  `json:"prompt_cache_read_tokens"`
-	PromptCacheCreationCost   string `json:"prompt_cache_creation_cost"`
-	PromptCacheReadCost       string `json:"prompt_cache_read_cost"`
-	ResponseCacheHits         int64  `json:"response_cache_hits"`
-	ResponseCacheCost         string `json:"response_cache_cost"`
-	UpstreamRequests          int64  `json:"upstream_requests"`
-	Requests                  int64  `json:"requests"`
-	ResponseCacheHitRate      string `json:"response_cache_hit_rate"`
+	PromptCacheCreationTokens                int64  `json:"prompt_cache_creation_tokens"`
+	PromptCacheReadTokens                    int64  `json:"prompt_cache_read_tokens"`
+	PromptCacheCreationCost                  string `json:"prompt_cache_creation_cost"`
+	PromptCacheReadCost                      string `json:"prompt_cache_read_cost"`
+	ResponseCacheHits                        int64  `json:"response_cache_hits"`
+	ResponseCacheCost                        string `json:"response_cache_cost"`
+	ResponseCacheReplayedInputTokens         int64  `json:"response_cache_replayed_input_tokens"`
+	ResponseCacheReplayedOutputTokens        int64  `json:"response_cache_replayed_output_tokens"`
+	ResponseCacheReplayedCacheCreationTokens int64  `json:"response_cache_replayed_cache_creation_tokens"`
+	ResponseCacheReplayedCacheReadTokens     int64  `json:"response_cache_replayed_cache_read_tokens"`
+	UpstreamRequests                         int64  `json:"upstream_requests"`
+	Requests                                 int64  `json:"requests"`
+	ResponseCacheHitRate                     string `json:"response_cache_hit_rate"`
 }
 
 type cacheCompositionResponse struct {
@@ -37,8 +44,8 @@ type cacheCompositionResponse struct {
 }
 
 // NewTenantCacheCompositionHandler 提供 GET /admin/v1/usage/cache-composition。
-// 同一窗口分栏：上游提示缓存写/读 Token 与费用，以及 L2 响应缓存命中次数与费用。
-// 租户管理员锁定认证租户；部署者必须显式 tenant_id。不把 L2 草稿 Token 折进提示缓存。
+// 同一窗口分栏：上游提示缓存写/读 Token 与费用，L2 响应缓存命中次数、费用与回放 Token。
+// 租户管理员锁定认证租户；部署者必须显式 tenant_id。不把 L2 回放 Token 折进提示缓存。
 func NewTenantCacheCompositionHandler(auth TenantOverviewAuth, q TenantCacheCompositionQuerier) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if auth == nil {
@@ -138,14 +145,19 @@ func cacheCompositionFromRow(row dboverview.AggregateTenantUsageCacheComposition
 		PromptCacheReadTokens:     row.PromptCacheReadTokens,
 		PromptCacheCreationCost:   createCost,
 		PromptCacheReadCost:       readCost,
-		ResponseCacheHits:         row.ResponseCacheHits,
-		ResponseCacheCost:         hitCost,
-		UpstreamRequests:          row.UpstreamRequests,
-		Requests:                  row.RequestCount,
-		ResponseCacheHitRate:      successRateText(row.ResponseCacheHits, row.RequestCount),
+		ResponseCacheHits:                        row.ResponseCacheHits,
+		ResponseCacheCost:                        hitCost,
+		ResponseCacheReplayedInputTokens:         row.ResponseCacheReplayedInputTokens,
+		ResponseCacheReplayedOutputTokens:        row.ResponseCacheReplayedOutputTokens,
+		ResponseCacheReplayedCacheCreationTokens: row.ResponseCacheReplayedCacheCreationTokens,
+		ResponseCacheReplayedCacheReadTokens:     row.ResponseCacheReplayedCacheReadTokens,
+		UpstreamRequests:                         row.UpstreamRequests,
+		Requests:                                 row.RequestCount,
+		ResponseCacheHitRate:                     successRateText(row.ResponseCacheHits, row.RequestCount),
 	}, nil
 }
 
+// 快照 key 带响应形状版本；v2 起含回放 Token 列，形状变化时必须升版而不是复用旧键。
 func tenantCacheCompositionSnapshotCacheKey(tenantID int64, query overviewQuery) string {
-	return "admin_tenant_usage_cache_composition:v1|tenant=" + strconv.FormatInt(tenantID, 10) + "|window=" + query.windowLabel
+	return "admin_tenant_usage_cache_composition:v2|tenant=" + strconv.FormatInt(tenantID, 10) + "|window=" + query.windowLabel
 }

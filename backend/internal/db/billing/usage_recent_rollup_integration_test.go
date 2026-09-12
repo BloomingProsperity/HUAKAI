@@ -288,8 +288,25 @@ func TestAggregateTenantUsageCacheCompositionIsolatesTenants(t *testing.T) {
 	if totalsA.RequestCount != gotA.RequestCount {
 		t.Fatalf("同窗 totals.requests=%d 必须与构成 requests=%d 对账", totalsA.RequestCount, gotA.RequestCount)
 	}
+	// L2 命中行回放给客户端的 Token 单列（8/2/99/88），只算 response_cache_l2 行。
+	if gotA.ResponseCacheReplayedInputTokens != 8 || gotA.ResponseCacheReplayedOutputTokens != 2 ||
+		gotA.ResponseCacheReplayedCacheCreationTokens != 99 || gotA.ResponseCacheReplayedCacheReadTokens != 88 {
+		t.Fatalf("租户 A 回放 Token=%+v，期望 8/2/99/88", gotA)
+	}
+	// totals 是客户端可见口径：提示缓存写 5+99=104、读 7+88=95，恒等于上游栏 + 回放栏。
+	// 变异：去掉任一 FILTER、或把回放列也按 provider_upstream 过滤 -> 恒等式破裂 -> 红。
+	if totalsA.TotalCacheCreationTokens != 104 || totalsA.TotalCacheReadTokens != 95 {
+		t.Fatalf("租户 A totals 提示缓存 Token=%d/%d，期望 104/95", totalsA.TotalCacheCreationTokens, totalsA.TotalCacheReadTokens)
+	}
+	if gotA.PromptCacheCreationTokens+gotA.ResponseCacheReplayedCacheCreationTokens != totalsA.TotalCacheCreationTokens ||
+		gotA.PromptCacheReadTokens+gotA.ResponseCacheReplayedCacheReadTokens != totalsA.TotalCacheReadTokens {
+		t.Fatalf("构成两栏之和必须等于同窗 totals：构成=%+v totals 写/读=%d/%d", gotA, totalsA.TotalCacheCreationTokens, totalsA.TotalCacheReadTokens)
+	}
 	if gotB.RequestCount != 3 || gotB.ResponseCacheHits != 0 || gotB.PromptCacheReadTokens != 0 {
 		t.Fatalf("租户 B 构成=%+v 必须看不见 A", gotB)
+	}
+	if gotB.ResponseCacheReplayedInputTokens != 0 || gotB.ResponseCacheReplayedCacheReadTokens != 0 {
+		t.Fatalf("租户 B 无 L2 命中，回放 Token 必须为 0：%+v", gotB)
 	}
 }
 

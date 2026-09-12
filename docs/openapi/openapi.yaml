@@ -2748,7 +2748,12 @@ paths:
         Read-only tenant-scoped cache composition. Prompt-cache write/read tokens
         and costs are aggregated only from upstream settlement rows. Response-cache
         hits are counted from L2 settlement rows and listed in a separate column.
-        The two must not be merged. Totals use the same tenant and window.
+        The two must not be merged. Totals use the same tenant and window and
+        count tokens as delivered to clients, which includes tokens replayed from
+        the L2 response cache; those replayed tokens are exposed separately as
+        response_cache_replayed_* so that
+        totals.total_cache_read_tokens == prompt_cache_read_tokens +
+        response_cache_replayed_cache_read_tokens (and likewise for creation).
         tenant_operator is locked to its authenticated tenant. platform_admin must
         pass tenant_id; omitting or blank is 400. timezone is rejected. Window is
         required and capped at 90 days.
@@ -2787,6 +2792,8 @@ paths:
                       - prompt_cache_creation_tokens
                       - prompt_cache_read_tokens
                       - response_cache_hits
+                      - response_cache_replayed_cache_creation_tokens
+                      - response_cache_replayed_cache_read_tokens
                       - upstream_requests
                       - requests
                     properties:
@@ -2796,6 +2803,13 @@ paths:
                       prompt_cache_read_cost: { type: string }
                       response_cache_hits: { type: integer, format: int64 }
                       response_cache_cost: { type: string }
+                      response_cache_replayed_input_tokens:
+                        type: integer
+                        format: int64
+                        description: Input tokens replayed to clients from L2 hits without reaching upstream.
+                      response_cache_replayed_output_tokens: { type: integer, format: int64 }
+                      response_cache_replayed_cache_creation_tokens: { type: integer, format: int64 }
+                      response_cache_replayed_cache_read_tokens: { type: integer, format: int64 }
                       upstream_requests: { type: integer, format: int64 }
                       requests: { type: integer, format: int64 }
                       response_cache_hit_rate: { type: string }

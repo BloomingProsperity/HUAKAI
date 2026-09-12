@@ -20,7 +20,11 @@ SELECT
     COALESCE(sum(ur.cache_read_tokens) FILTER (WHERE ur.settlement_source = 'provider_upstream'), 0)::bigint AS prompt_cache_read_tokens,
     COALESCE(sum(ur.cache_creation_cost) FILTER (WHERE ur.settlement_source = 'provider_upstream'), 0)::numeric(20,8)::text AS prompt_cache_creation_cost,
     COALESCE(sum(ur.cache_read_cost) FILTER (WHERE ur.settlement_source = 'provider_upstream'), 0)::numeric(20,8)::text AS prompt_cache_read_cost,
-    COALESCE(sum(ur.actual_cost) FILTER (WHERE ur.settlement_source = 'response_cache_l2'), 0)::numeric(20,8)::text AS response_cache_cost
+    COALESCE(sum(ur.actual_cost) FILTER (WHERE ur.settlement_source = 'response_cache_l2'), 0)::numeric(20,8)::text AS response_cache_cost,
+    COALESCE(sum(ur.tokens_input) FILTER (WHERE ur.settlement_source = 'response_cache_l2'), 0)::bigint AS response_cache_replayed_input_tokens,
+    COALESCE(sum(ur.tokens_output) FILTER (WHERE ur.settlement_source = 'response_cache_l2'), 0)::bigint AS response_cache_replayed_output_tokens,
+    COALESCE(sum(ur.cache_creation_tokens) FILTER (WHERE ur.settlement_source = 'response_cache_l2'), 0)::bigint AS response_cache_replayed_cache_creation_tokens,
+    COALESCE(sum(ur.cache_read_tokens) FILTER (WHERE ur.settlement_source = 'response_cache_l2'), 0)::bigint AS response_cache_replayed_cache_read_tokens
 FROM usage_records ur
 WHERE ur.tenant_id = $1::bigint
   AND ur.settled_at >= $2::timestamptz
@@ -32,18 +36,24 @@ type AggregateTenantUsageCacheCompositionParams struct {
 }
 
 type AggregateTenantUsageCacheCompositionRow struct {
-	RequestCount              int64  `db:"request_count" json:"request_count"`
-	UpstreamRequests          int64  `db:"upstream_requests" json:"upstream_requests"`
-	ResponseCacheHits         int64  `db:"response_cache_hits" json:"response_cache_hits"`
-	PromptCacheCreationTokens int64  `db:"prompt_cache_creation_tokens" json:"prompt_cache_creation_tokens"`
-	PromptCacheReadTokens     int64  `db:"prompt_cache_read_tokens" json:"prompt_cache_read_tokens"`
-	PromptCacheCreationCost   string `db:"prompt_cache_creation_cost" json:"prompt_cache_creation_cost"`
-	PromptCacheReadCost       string `db:"prompt_cache_read_cost" json:"prompt_cache_read_cost"`
-	ResponseCacheCost         string `db:"response_cache_cost" json:"response_cache_cost"`
+	RequestCount                             int64  `db:"request_count" json:"request_count"`
+	UpstreamRequests                         int64  `db:"upstream_requests" json:"upstream_requests"`
+	ResponseCacheHits                        int64  `db:"response_cache_hits" json:"response_cache_hits"`
+	PromptCacheCreationTokens                int64  `db:"prompt_cache_creation_tokens" json:"prompt_cache_creation_tokens"`
+	PromptCacheReadTokens                    int64  `db:"prompt_cache_read_tokens" json:"prompt_cache_read_tokens"`
+	PromptCacheCreationCost                  string `db:"prompt_cache_creation_cost" json:"prompt_cache_creation_cost"`
+	PromptCacheReadCost                      string `db:"prompt_cache_read_cost" json:"prompt_cache_read_cost"`
+	ResponseCacheCost                        string `db:"response_cache_cost" json:"response_cache_cost"`
+	ResponseCacheReplayedInputTokens         int64  `db:"response_cache_replayed_input_tokens" json:"response_cache_replayed_input_tokens"`
+	ResponseCacheReplayedOutputTokens        int64  `db:"response_cache_replayed_output_tokens" json:"response_cache_replayed_output_tokens"`
+	ResponseCacheReplayedCacheCreationTokens int64  `db:"response_cache_replayed_cache_creation_tokens" json:"response_cache_replayed_cache_creation_tokens"`
+	ResponseCacheReplayedCacheReadTokens     int64  `db:"response_cache_replayed_cache_read_tokens" json:"response_cache_replayed_cache_read_tokens"`
 }
 
 // 同一租户、同一结算窗口的业务缓存构成。
 // 提示缓存写/读只计上游结算行；响应缓存命中只计 L2 结算行。禁止合成一列。
+// L2 命中行回放的输入/输出/提示缓存写读 Token 单列，使同窗 totals 的提示缓存 Token
+// 恒等于 prompt_cache_* + response_cache_replayed_cache_* 可对账。
 func (q *Queries) AggregateTenantUsageCacheComposition(ctx context.Context, arg AggregateTenantUsageCacheCompositionParams) (AggregateTenantUsageCacheCompositionRow, error) {
 	row := q.db.QueryRow(ctx, aggregateTenantUsageCacheComposition, arg.TenantID, arg.SettledSince)
 	var i AggregateTenantUsageCacheCompositionRow
@@ -56,6 +66,10 @@ func (q *Queries) AggregateTenantUsageCacheComposition(ctx context.Context, arg 
 		&i.PromptCacheCreationCost,
 		&i.PromptCacheReadCost,
 		&i.ResponseCacheCost,
+		&i.ResponseCacheReplayedInputTokens,
+		&i.ResponseCacheReplayedOutputTokens,
+		&i.ResponseCacheReplayedCacheCreationTokens,
+		&i.ResponseCacheReplayedCacheReadTokens,
 	)
 	return i, err
 }
@@ -90,7 +104,7 @@ type AggregateTenantUsageHourlyTrendRow struct {
 }
 
 // 同一租户、同一结算窗口的 UTC 小时桶：输入/输出/提示缓存写读 Token 与实扣费用。
-// 不补零点；不把网关响应缓存命中折进提示缓存 Token。
+// 不补零点；Token 口径与 totals 一致，含 L2 响应缓存命中回放的 Token。
 func (q *Queries) AggregateTenantUsageHourlyTrend(ctx context.Context, arg AggregateTenantUsageHourlyTrendParams) ([]AggregateTenantUsageHourlyTrendRow, error) {
 	rows, err := q.db.Query(ctx, aggregateTenantUsageHourlyTrend, arg.TenantID, arg.SettledSince)
 	if err != nil {
@@ -167,7 +181,8 @@ type AggregateTenantUsageOverviewTotalsRow struct {
 
 // 租户作用域经营总览 totals。tenant_id 强制，禁止省略成全平台。
 // 列口径与平台总览一致：请求数、实扣费用、输入/输出/提示缓存写读/图像 Token
-// 与费用分项、活跃用户/密钥、成功数。不把网关响应缓存命中折进提示缓存 Token。
+// 与费用分项、活跃用户/密钥、成功数。Token 分项是客户端实际收到的口径，
+// 包含 L2 响应缓存命中回放的 Token（费用为 0）；只算上游的口径见缓存构成查询。
 func (q *Queries) AggregateTenantUsageOverviewTotals(ctx context.Context, arg AggregateTenantUsageOverviewTotalsParams) (AggregateTenantUsageOverviewTotalsRow, error) {
 	row := q.db.QueryRow(ctx, aggregateTenantUsageOverviewTotals, arg.TenantID, arg.SettledSince)
 	var i AggregateTenantUsageOverviewTotalsRow
