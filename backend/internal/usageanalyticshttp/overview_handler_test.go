@@ -18,22 +18,23 @@ import (
 )
 
 type overviewSeedEvent struct {
-	userID          int64
-	apiKeyID        int64
-	model           string
-	settledAt       time.Time
-	cost            decimal.Decimal
-	tokensInput     int64
-	tokensOutput    int64
-	cacheCreated    int64
-	cacheRead       int64
-	imageOutput     int64
-	inputCost       decimal.Decimal
-	outputCost      decimal.Decimal
-	cacheCreateCost decimal.Decimal
-	cacheReadCost   decimal.Decimal
-	imageOutputCost decimal.Decimal
-	endClass        string
+	userID           int64
+	apiKeyID         int64
+	model            string
+	settledAt        time.Time
+	cost             decimal.Decimal
+	tokensInput      int64
+	tokensOutput     int64
+	cacheCreated     int64
+	cacheRead        int64
+	imageOutput      int64
+	inputCost        decimal.Decimal
+	outputCost       decimal.Decimal
+	cacheCreateCost  decimal.Decimal
+	cacheReadCost    decimal.Decimal
+	imageOutputCost  decimal.Decimal
+	endClass         string
+	settlementSource string
 }
 
 type overviewQueryStub struct {

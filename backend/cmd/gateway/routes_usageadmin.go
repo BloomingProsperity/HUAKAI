@@ -43,13 +43,17 @@ func mountUsageAdminRoutesResolved(r chi.Router, d *deps, resolver adminIdentity
 	// typed-nil *Queries 必须先收成无类型 nil，否则 handler 的 q==nil 守卫失效。
 	var tenantOverview usageanalyticshttp.TenantOverviewQuerier
 	var tenantHourly usageanalyticshttp.TenantHourlyQuerier
+	var tenantCache usageanalyticshttp.TenantCacheCompositionQuerier
 	if d.pgPool != nil {
 		q := usageoverview.New(d.pgPool)
 		tenantOverview = q
 		tenantHourly = q
+		tenantCache = q
 	}
 	r.Method(http.MethodGet, "/admin/v1/usage/overview",
 		usageanalyticshttp.NewTenantOverviewHandler(resolver, tenantOverview))
 	r.Method(http.MethodGet, "/admin/v1/usage/hourly",
 		usageanalyticshttp.NewTenantHourlyHandler(resolver, tenantHourly))
+	r.Method(http.MethodGet, "/admin/v1/usage/cache-composition",
+		usageanalyticshttp.NewTenantCacheCompositionHandler(resolver, tenantCache))
 }

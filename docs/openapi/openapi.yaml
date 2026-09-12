@@ -2734,6 +2734,76 @@ paths:
         '403': { description: Caller cannot act on this tenant scope. }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /admin/v1/usage/cache-composition:
+    get:
+      tags: [admin]
+      summary: Tenant-scoped prompt-cache vs response-cache composition
+      operationId: adminTenantUsageCacheComposition
+      x-huakai-required-role: platform_admin_or_tenant_operator
+      x-huakai-spec-source:
+        - backend/internal/usageanalyticshttp/tenant_cache_composition_handler.go
+        - backend/cmd/gateway/routes_usageadmin.go
+        - backend/sql/queries/usage_tenant_overview.sql
+      description: |
+        Read-only tenant-scoped cache composition. Prompt-cache write/read tokens
+        and costs are aggregated only from upstream settlement rows. Response-cache
+        hits are counted from L2 settlement rows and listed in a separate column.
+        The two must not be merged. Totals use the same tenant and window.
+        tenant_operator is locked to its authenticated tenant. platform_admin must
+        pass tenant_id; omitting or blank is 400. timezone is rejected. Window is
+        required and capped at 90 days.
+      parameters:
+        - name: window
+          in: query
+          required: true
+          schema: { type: string, example: 7d }
+        - name: tenant_id
+          in: query
+          required: false
+          description: Required for platform_admin; tenant_operator defaults to its scoped tenant.
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: Tenant-scoped cache composition for the requested window.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tenant_id, window, totals, composition]
+                properties:
+                  tenant_id: { type: integer, format: int64 }
+                  window: { type: string }
+                  totals:
+                    type: object
+                    properties:
+                      requests: { type: integer, format: int64 }
+                      total_cost: { type: string }
+                      total_tokens: { type: integer, format: int64 }
+                      total_cache_creation_tokens: { type: integer, format: int64 }
+                      total_cache_read_tokens: { type: integer, format: int64 }
+                  composition:
+                    type: object
+                    required:
+                      - prompt_cache_creation_tokens
+                      - prompt_cache_read_tokens
+                      - response_cache_hits
+                      - upstream_requests
+                      - requests
+                    properties:
+                      prompt_cache_creation_tokens: { type: integer, format: int64 }
+                      prompt_cache_read_tokens: { type: integer, format: int64 }
+                      prompt_cache_creation_cost: { type: string }
+                      prompt_cache_read_cost: { type: string }
+                      response_cache_hits: { type: integer, format: int64 }
+                      response_cache_cost: { type: string }
+                      upstream_requests: { type: integer, format: int64 }
+                      requests: { type: integer, format: int64 }
+                      response_cache_hit_rate: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: Caller cannot act on this tenant scope. }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /admin/v1/risk/overview:
     get:
       tags: [admin-risk]

@@ -50,3 +50,19 @@ WHERE ur.tenant_id = sqlc.arg(tenant_id)::bigint
   AND ur.settled_at >= sqlc.arg(settled_since)::timestamptz
 GROUP BY 1
 ORDER BY 1 ASC;
+
+-- name: AggregateTenantUsageCacheComposition :one
+-- 同一租户、同一结算窗口的业务缓存构成。
+-- 提示缓存写/读只计上游结算行；响应缓存命中只计 L2 结算行。禁止合成一列。
+SELECT
+    count(*)::bigint AS request_count,
+    count(*) FILTER (WHERE ur.settlement_source = 'provider_upstream')::bigint AS upstream_requests,
+    count(*) FILTER (WHERE ur.settlement_source = 'response_cache_l2')::bigint AS response_cache_hits,
+    COALESCE(sum(ur.cache_creation_tokens) FILTER (WHERE ur.settlement_source = 'provider_upstream'), 0)::bigint AS prompt_cache_creation_tokens,
+    COALESCE(sum(ur.cache_read_tokens) FILTER (WHERE ur.settlement_source = 'provider_upstream'), 0)::bigint AS prompt_cache_read_tokens,
+    COALESCE(sum(ur.cache_creation_cost) FILTER (WHERE ur.settlement_source = 'provider_upstream'), 0)::numeric(20,8)::text AS prompt_cache_creation_cost,
+    COALESCE(sum(ur.cache_read_cost) FILTER (WHERE ur.settlement_source = 'provider_upstream'), 0)::numeric(20,8)::text AS prompt_cache_read_cost,
+    COALESCE(sum(ur.actual_cost) FILTER (WHERE ur.settlement_source = 'response_cache_l2'), 0)::numeric(20,8)::text AS response_cache_cost
+FROM usage_records ur
+WHERE ur.tenant_id = sqlc.arg(tenant_id)::bigint
+  AND ur.settled_at >= sqlc.arg(settled_since)::timestamptz;

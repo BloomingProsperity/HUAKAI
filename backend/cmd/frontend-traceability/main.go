@@ -415,6 +415,8 @@ func classify(op operation, base tagSpec) (page, scene string, integration bool)
 	case strings.Contains(path, "/loglevel") || strings.Contains(path, "/platform-settings") ||
 		strings.Contains(path, "/admin/version"):
 		return "FE-PG-008", "运行配置与版本", false
+	case strings.Contains(path, "/admin/v1/usage/cache-composition"):
+		return "FE-PG-002", "本租户缓存构成", false
 	case strings.Contains(path, "/admin/v1/usage/hourly"):
 		return "FE-PG-002", "本租户小时趋势", false
 	case strings.Contains(path, "/admin/v1/usage/overview"):

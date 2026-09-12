@@ -9,6 +9,9 @@ import (
 )
 
 type Querier interface {
+	// 同一租户、同一结算窗口的业务缓存构成。
+	// 提示缓存写/读只计上游结算行；响应缓存命中只计 L2 结算行。禁止合成一列。
+	AggregateTenantUsageCacheComposition(ctx context.Context, arg AggregateTenantUsageCacheCompositionParams) (AggregateTenantUsageCacheCompositionRow, error)
 	// 同一租户、同一结算窗口的 UTC 小时桶：输入/输出/提示缓存写读 Token 与实扣费用。
 	// 不补零点；不把网关响应缓存命中折进提示缓存 Token。
 	AggregateTenantUsageHourlyTrend(ctx context.Context, arg AggregateTenantUsageHourlyTrendParams) ([]AggregateTenantUsageHourlyTrendRow, error)

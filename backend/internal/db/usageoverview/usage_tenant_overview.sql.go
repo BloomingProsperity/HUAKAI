@@ -11,6 +11,55 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const aggregateTenantUsageCacheComposition = `-- name: AggregateTenantUsageCacheComposition :one
+SELECT
+    count(*)::bigint AS request_count,
+    count(*) FILTER (WHERE ur.settlement_source = 'provider_upstream')::bigint AS upstream_requests,
+    count(*) FILTER (WHERE ur.settlement_source = 'response_cache_l2')::bigint AS response_cache_hits,
+    COALESCE(sum(ur.cache_creation_tokens) FILTER (WHERE ur.settlement_source = 'provider_upstream'), 0)::bigint AS prompt_cache_creation_tokens,
+    COALESCE(sum(ur.cache_read_tokens) FILTER (WHERE ur.settlement_source = 'provider_upstream'), 0)::bigint AS prompt_cache_read_tokens,
+    COALESCE(sum(ur.cache_creation_cost) FILTER (WHERE ur.settlement_source = 'provider_upstream'), 0)::numeric(20,8)::text AS prompt_cache_creation_cost,
+    COALESCE(sum(ur.cache_read_cost) FILTER (WHERE ur.settlement_source = 'provider_upstream'), 0)::numeric(20,8)::text AS prompt_cache_read_cost,
+    COALESCE(sum(ur.actual_cost) FILTER (WHERE ur.settlement_source = 'response_cache_l2'), 0)::numeric(20,8)::text AS response_cache_cost
+FROM usage_records ur
+WHERE ur.tenant_id = $1::bigint
+  AND ur.settled_at >= $2::timestamptz
+`
+
+type AggregateTenantUsageCacheCompositionParams struct {
+	TenantID     int64              `db:"tenant_id" json:"tenant_id"`
+	SettledSince pgtype.Timestamptz `db:"settled_since" json:"settled_since"`
+}
+
+type AggregateTenantUsageCacheCompositionRow struct {
+	RequestCount              int64  `db:"request_count" json:"request_count"`
+	UpstreamRequests          int64  `db:"upstream_requests" json:"upstream_requests"`
+	ResponseCacheHits         int64  `db:"response_cache_hits" json:"response_cache_hits"`
+	PromptCacheCreationTokens int64  `db:"prompt_cache_creation_tokens" json:"prompt_cache_creation_tokens"`
+	PromptCacheReadTokens     int64  `db:"prompt_cache_read_tokens" json:"prompt_cache_read_tokens"`
+	PromptCacheCreationCost   string `db:"prompt_cache_creation_cost" json:"prompt_cache_creation_cost"`
+	PromptCacheReadCost       string `db:"prompt_cache_read_cost" json:"prompt_cache_read_cost"`
+	ResponseCacheCost         string `db:"response_cache_cost" json:"response_cache_cost"`
+}
+
+// 同一租户、同一结算窗口的业务缓存构成。
+// 提示缓存写/读只计上游结算行；响应缓存命中只计 L2 结算行。禁止合成一列。
+func (q *Queries) AggregateTenantUsageCacheComposition(ctx context.Context, arg AggregateTenantUsageCacheCompositionParams) (AggregateTenantUsageCacheCompositionRow, error) {
+	row := q.db.QueryRow(ctx, aggregateTenantUsageCacheComposition, arg.TenantID, arg.SettledSince)
+	var i AggregateTenantUsageCacheCompositionRow
+	err := row.Scan(
+		&i.RequestCount,
+		&i.UpstreamRequests,
+		&i.ResponseCacheHits,
+		&i.PromptCacheCreationTokens,
+		&i.PromptCacheReadTokens,
+		&i.PromptCacheCreationCost,
+		&i.PromptCacheReadCost,
+		&i.ResponseCacheCost,
+	)
+	return i, err
+}
+
 const aggregateTenantUsageHourlyTrend = `-- name: AggregateTenantUsageHourlyTrend :many
 SELECT
     (date_trunc('hour', ur.settled_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')::timestamptz AS hour,
