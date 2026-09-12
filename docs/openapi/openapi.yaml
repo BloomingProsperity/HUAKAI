@@ -1834,6 +1834,108 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /v1/me/requests/{request_id}/trace:
+    get:
+      tags: [user-audit]
+      summary: End-user redacted call chain timeline for one of the caller's requests
+      operationId: getMyRequestTrace
+      x-huakai-required-role: session
+      x-huakai-spec-source:
+        - backend/internal/requesttracehttp/handler.go
+        - backend/cmd/gateway/routes.go
+        - backend/sql/queries/request_trace.sql
+      description: |
+        Same timeline projection as the admin endpoint, scoped by the validated
+        session identity (tenant_id + user_id) and redacted for end users: model,
+        pool name, status, per-attempt outcome / end class / usage / cost / timing,
+        ledger events, trust receipt summary (ledger id and signing key
+        fingerprint), signed cost receipt summary and coverage markers. It never
+        contains provider account references, channel ids, provider codes,
+        upstream model names, routing details, account-level audit events, the
+        receipt model/hop chains, credentials or upstream addresses. Requests that
+        are not the caller's own, unknown ids and requests whose detail expired
+        without any ledger row all return the same 404 shape so the response
+        cannot be used to probe other users' request ids.
+      parameters:
+        - name: request_id
+          in: path
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 256, description: Gateway HTTP request id or logical (idempotency) request id; no whitespace or control characters. }
+      responses:
+        '200':
+          description: Timeline projection for the caller's request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RequestTraceResponse'
+        '400':
+          description: Invalid request_id.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '401':
+          description: Missing or invalid session.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '404':
+          description: No visible facts for this request id.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '503':
+          description: Truth store unavailable.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+  /v1/me/requests/{request_id_host}/{request_id_tail}/trace:
+    get:
+      tags: [user-audit]
+      summary: End-user call chain timeline (request id containing one slash)
+      operationId: getMyRequestTraceSlashed
+      x-huakai-required-role: session
+      x-huakai-spec-source:
+        - backend/internal/requesttracehttp/handler.go
+        - backend/cmd/gateway/routes.go
+      description: |
+        Same as /v1/me/requests/{request_id}/trace for request ids that contain
+        exactly one slash (client idempotency keys); segments are joined back
+        with "/" before the exact lookup. Same redaction and error contract.
+      parameters:
+        - name: request_id_host
+          in: path
+          required: true
+          schema: { type: string }
+        - name: request_id_tail
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Timeline projection for the caller's request.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RequestTraceResponse' }
+        '400':
+          description: Invalid request_id.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '401':
+          description: Missing or invalid session.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '404':
+          description: No visible facts for this request id.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '503':
+          description: Truth store unavailable.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
   /v1/me/usage-records:
     get:
       tags: [user-audit]
@@ -11195,6 +11297,153 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
+  /admin/v1/requests/{request_id}/trace:
+    get:
+      tags: [admin, admin-usage]
+      summary: Redacted per-request call chain timeline (admin and tenant operator)
+      operationId: adminRequestTrace
+      x-huakai-required-role: platform_admin_or_tenant_operator
+      x-huakai-spec-source:
+        - backend/internal/requesttracehttp/handler.go
+        - backend/cmd/gateway/routes.go
+        - backend/sql/queries/request_trace.sql
+      description: |
+        Read-only, server-side timeline for one request. HUAKAI has two request
+        identifiers: the ledger claim's logical request id (the client
+        Idempotency-Key or a gateway-generated id) and the gateway HTTP request
+        id (X-Request-Id, used by receipts and audit events). Either may be
+        passed; the claim is resolved through the logical id or through ledger
+        events carrying the HTTP id, and both identifiers are returned in
+        request.logical_request_id / request.http_request_ids. Audit events and
+        receipts are joined with all identifiers related to the claim. The
+        projection assembles the claim head (entry family, model, pool, status,
+        predicted/actual cost), every settled upstream attempt from usage
+        records (attempt_seq, account reference, end class, usage and cost
+        breakdown, timing, routing digest), ledger events (claim committed /
+        aborted / reconciliation appended, kept forever), account-level audit
+        events (channel health transitions, routing audit, rate limit, credential
+        refresh), the trust-chain receipt summary and the signed end-user cost
+        receipt summary. Attempts aborted before an account was acquired exist
+        only as ledger events, so their account is unknown and
+        coverage.unknown_account_attempts counts them; coverage.attempts_detail
+        (full | partial | final_only | none) and coverage.detail_retention
+        (within | pending | expired | no_detail; pending = settled within the
+        async usage persistence grace window) are structured degradation
+        markers - the endpoint never returns an empty projection as if nothing
+        happened, and a missing section never fails the whole query.
+        Redaction: tenant_operator sees tenant resource references (provider
+        account id/name, channel id, provider code, upstream model), the receipt
+        model chain and sanitized attempt detail, but never credentials, upstream
+        addresses, request bodies, per-account exclusion lists, free-text routing
+        audit reasons or trust-ledger entries without a tenant; platform_admin
+        additionally sees tenant/user/api key numeric ids, per-account exclusion
+        lists, routing audit reason text and the receipt hop chain.
+        Scope: tenant_operator is locked to its authenticated tenant (explicit
+        other tenant_id -> 403); platform_admin may omit tenant_id to look the
+        request id up across tenants, or pass a positive tenant_id to restrict.
+        Authorization comes only from the authenticated identity and database
+        ownership; query parameters cannot widen scope. Unknown or foreign ids
+        return 404 request_not_found; invalid ids return 400; truth store
+        failures return 503 instead of an empty projection.
+      parameters:
+        - name: request_id
+          in: path
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 256, description: Gateway HTTP request id or logical (idempotency) request id; no whitespace or control characters. }
+        - name: tenant_id
+          in: query
+          required: false
+          description: platform_admin only - restrict lookup to one tenant; tenant_operator may only pass its own tenant.
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: Timeline projection for the request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RequestTraceResponse'
+        '400':
+          description: Invalid request_id (empty, longer than 256 bytes, or containing whitespace/control characters) or tenant_id.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '401':
+          description: Missing or invalid admin credential.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '403':
+          description: Tenant operator attempted another tenant scope.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '404':
+          description: No visible facts for this request id (unknown, foreign, or detail expired without ledger).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '503':
+          description: Truth store unavailable; never an empty projection.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+  /admin/v1/requests/{request_id_host}/{request_id_tail}/trace:
+    get:
+      tags: [admin, admin-usage]
+      summary: Redacted per-request call chain timeline (request id containing one slash)
+      operationId: adminRequestTraceSlashed
+      x-huakai-required-role: platform_admin_or_tenant_operator
+      x-huakai-spec-source:
+        - backend/internal/requesttracehttp/handler.go
+        - backend/cmd/gateway/routes.go
+      description: |
+        Same as /admin/v1/requests/{request_id}/trace for client idempotency keys
+        that contain exactly one slash; the two path segments are joined back
+        with "/" before the exact lookup. Same redaction, scope and error contract.
+      parameters:
+        - name: request_id_host
+          in: path
+          required: true
+          schema: { type: string }
+        - name: request_id_tail
+          in: path
+          required: true
+          schema: { type: string }
+        - name: tenant_id
+          in: query
+          required: false
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: Timeline projection for the request.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RequestTraceResponse' }
+        '400':
+          description: Invalid request_id or tenant_id.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '401':
+          description: Missing or invalid admin credential.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '403':
+          description: Tenant operator attempted another tenant scope.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '404':
+          description: No visible facts for this request id.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '503':
+          description: Truth store unavailable.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
   /admin/v1/pools/health-summary:
     get:
       tags: [admin, admin-pools]
@@ -20325,6 +20574,209 @@ components:
           format: int64
           description: Payment-source balance in USD cents after the reward credit.
 
+    RequestTraceAccountRef:
+      type: object
+      additionalProperties: false
+      required: [provider_account_id]
+      description: Tenant resource reference for an upstream account - never credentials, login names or upstream addresses.
+      properties:
+        provider_account_id: { type: integer, format: int64 }
+        name: { type: string }
+        channel_id: { type: integer, format: int64 }
+    RequestTraceUsage:
+      type: object
+      additionalProperties: false
+      required: [tokens_input, tokens_output, cache_creation_tokens, cache_read_tokens, image_output_tokens, delivered_tokens, actual_cost, input_cost, output_cost, cache_creation_cost, cache_read_cost, image_output_cost]
+      properties:
+        tokens_input: { type: integer, format: int64 }
+        tokens_output: { type: integer, format: int64 }
+        cache_creation_tokens: { type: integer, format: int64 }
+        cache_read_tokens: { type: integer, format: int64 }
+        image_output_tokens: { type: integer, format: int64 }
+        delivered_tokens: { type: integer, format: int64 }
+        actual_cost: { type: string, description: Decimal string. }
+        input_cost: { type: string }
+        output_cost: { type: string }
+        cache_creation_cost: { type: string }
+        cache_read_cost: { type: string }
+        image_output_cost: { type: string }
+    RequestTraceResponse:
+      type: object
+      additionalProperties: false
+      required: [viewer, request, attempts, events, receipt, cost_receipt, coverage, totals]
+      properties:
+        viewer:
+          type: string
+          enum: [user, tenant_operator, platform_admin]
+          description: Redaction tier applied to this response.
+        request:
+          type: object
+          additionalProperties: false
+          required: [request_id, logical_request_id, http_request_ids, endpoint_family, requested_model, request_class, billing_effect, status, last_attempt_seq, predicted_cost, actual_cost, currency, reserved_at, settled_at]
+          properties:
+            request_id: { type: string, description: The identifier used for this lookup. }
+            logical_request_id: { type: string, description: Ledger claim idempotency identifier. }
+            http_request_ids:
+              type: array
+              items: { type: string }
+              description: Gateway HTTP request ids recorded on ledger events for this claim (usually one).
+            tenant_id: { type: integer, format: int64, description: platform_admin only. }
+            user_id: { type: integer, format: int64, description: platform_admin only. }
+            api_key_id: { type: integer, format: int64, description: platform_admin only; never the key material. }
+            endpoint_family: { type: string }
+            requested_model: { type: string }
+            request_class: { type: string }
+            billing_effect: { type: string }
+            pool_group_id: { type: integer, format: int64, description: Not returned to end users. }
+            pool_name: { type: string, nullable: true }
+            status: { type: string, enum: [reserving, committed, aborted] }
+            failure_category:
+              type: string
+              enum: [auth, routing_unavailable, upstream, internal, rate_limit, quota, invalid_request, security_policy, other]
+              description: Coarse failure class derived from the gateway abort classification; present only when status is aborted. Visible to every role.
+            aborted_reason: { type: string, description: Gateway classification code; not returned to end users. }
+            last_attempt_seq: { type: integer }
+            final_account:
+              allOf: [{ $ref: '#/components/schemas/RequestTraceAccountRef' }]
+              description: Account of the last attempt; not returned to end users.
+            predicted_cost: { type: string }
+            actual_cost: { type: string, nullable: true }
+            currency: { type: string }
+            reserved_at: { type: string, format: date-time }
+            settled_at: { type: string, format: date-time, nullable: true }
+        attempts:
+          type: array
+          description: Settled upstream attempts in attempt_seq order; zero-usage aborts appear only as ledger events.
+          items:
+            type: object
+            additionalProperties: false
+            required: [attempt_seq, outcome, end_class, requested_model, stream, usage_source, settlement_source, pending_reconciliation, usage, timing, protocol_loss_count]
+            properties:
+              attempt_seq: { type: integer }
+              outcome:
+                type: string
+                enum: [success, failed, cancelled, partial]
+                description: Derived from the ledger stream state and delivery - attempts aborted after acquiring an account are failed, not partial.
+              end_class: { type: string }
+              failure_category:
+                type: string
+                enum: [auth, routing_unavailable, upstream, internal, rate_limit, quota, invalid_request, security_policy, other]
+                description: Coarse failure class for non-success attempts; visible to every role.
+              terminated_reason: { type: string, description: Gateway termination classification code; not returned to end users. }
+              provider: { type: string, description: Not returned to end users. }
+              account:
+                allOf: [{ $ref: '#/components/schemas/RequestTraceAccountRef' }]
+                description: Not returned to end users.
+              requested_model: { type: string }
+              upstream_model: { type: string, description: Not returned to end users. }
+              stream: { type: boolean }
+              usage_source: { type: string }
+              settlement_source: { type: string }
+              pending_reconciliation: { type: boolean }
+              usage: { $ref: '#/components/schemas/RequestTraceUsage' }
+              timing:
+                type: object
+                additionalProperties: false
+                required: [requested_at, upstream_request_at, first_byte_at, first_event_at, last_event_at, settled_at]
+                properties:
+                  requested_at: { type: string, format: date-time }
+                  upstream_request_at: { type: string, format: date-time, nullable: true }
+                  first_byte_at: { type: string, format: date-time, nullable: true }
+                  first_event_at: { type: string, format: date-time, nullable: true }
+                  last_event_at: { type: string, format: date-time, nullable: true }
+                  settled_at: { type: string, format: date-time }
+              routing:
+                type: object
+                additionalProperties: false
+                description: Routing digest; not returned to end users. excluded_accounts only for platform_admin.
+                required: [selection_layer, retry_attempt_number, waited_in_queue, forced_route_override]
+                properties:
+                  selection_layer: { type: string }
+                  affinity_key_class: { type: string }
+                  sticky_break_reason: { type: string, nullable: true }
+                  capability_outcome: { type: string }
+                  retry_attempt_number: { type: integer }
+                  candidate_counts_by_exclusion:
+                    type: object
+                    additionalProperties: { type: integer }
+                  excluded_accounts:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: false
+                      required: [provider_account_id, reason]
+                      properties:
+                        provider_account_id: { type: integer, format: int64 }
+                        reason: { type: string }
+                  scoring_policy_version: { type: string }
+                  waited_in_queue: { type: boolean }
+                  queue_exit_reason: { type: string }
+                  forced_route_override: { type: boolean }
+              protocol_loss_count: { type: integer }
+        events:
+          type: array
+          description: Ordered timeline; end users only see billing events.
+          items:
+            type: object
+            additionalProperties: false
+            required: [source, event_type, occurred_at]
+            properties:
+              source:
+                type: string
+                enum: [billing, channel_health, pool_routing, rate_limit, oauth_refresh]
+                description: pool_routing is reserved - the current gateway has no production writer for that audit table.
+              event_type: { type: string }
+              reason: { type: string, description: Enumerated reason class; free-text pool_routing reasons only for platform_admin. }
+              previous_state: { type: string }
+              new_state: { type: string }
+              end_class: { type: string, nullable: true }
+              usage_source: { type: string, nullable: true }
+              actual_cost: { type: string, nullable: true }
+              account: { $ref: '#/components/schemas/RequestTraceAccountRef' }
+              occurred_at: { type: string, format: date-time }
+        receipt:
+          type: object
+          nullable: true
+          additionalProperties: false
+          required: [ledger_id, occurred_at, pubkey_fingerprint]
+          properties:
+            ledger_id: { type: string }
+            occurred_at: { type: string, format: date-time }
+            pubkey_fingerprint: { type: string }
+            model_chain: { description: Model chain as recorded in the trust ledger; not returned to end users. }
+            hop_chain: { description: Upstream hop chain; platform_admin only. }
+        cost_receipt:
+          type: object
+          nullable: true
+          additionalProperties: false
+          description: Signed end-user cost receipt summary (same source as /v1/receipts); visible to every role.
+          required: [request_id, receipt_sequence, model, input_tokens, output_tokens, cached_tokens, cost_usd_micros, created_at]
+          properties:
+            request_id: { type: string }
+            receipt_sequence: { type: integer }
+            model: { type: string }
+            input_tokens: { type: integer, format: int64 }
+            output_tokens: { type: integer, format: int64 }
+            cached_tokens: { type: integer, format: int64 }
+            cost_usd_micros: { type: integer, format: int64 }
+            created_at: { type: string, format: date-time }
+        coverage:
+          type: object
+          additionalProperties: false
+          required: [has_usage, has_billing_events, has_audit_events, has_receipt, has_cost_receipt, attempts_detail, detail_retention, unknown_account_attempts, aborted_attempts, committed_attempts, notes]
+          properties:
+            has_usage: { type: boolean }
+            has_billing_events: { type: boolean }
+            has_audit_events: { type: boolean, description: End users never receive account-level audit events, so this is always false for the user endpoint. }
+            has_receipt: { type: boolean }
+            has_cost_receipt: { type: boolean }
+            attempts_detail: { type: string, enum: [full, partial, final_only, none] }
+            detail_retention: { type: string, enum: [within, pending, expired, no_detail] }
+            unknown_account_attempts: { type: integer }
+            aborted_attempts: { type: integer }
+            committed_attempts: { type: integer }
+            notes: { type: array, items: { type: string } }
+        totals: { $ref: '#/components/schemas/RequestTraceUsage' }
     ErrorResponse:
       type: object
       additionalProperties: false

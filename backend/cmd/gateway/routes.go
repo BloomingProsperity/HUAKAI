@@ -40,6 +40,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/crssource"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialprojecthttp"
 	dbmodelroutingadmin "github.com/BloomingProsperity/HUAKAI/internal/db/modelroutingadmin"
+	requesttracedb "github.com/BloomingProsperity/HUAKAI/internal/db/requesttracedb"
 	"github.com/BloomingProsperity/HUAKAI/internal/dlqhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/emailsettingshttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/embeddingshttp"
@@ -83,6 +84,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/quota"
 	"github.com/BloomingProsperity/HUAKAI/internal/referralhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
+	"github.com/BloomingProsperity/HUAKAI/internal/requesttracehttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/rerankhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/responsescompacthttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/runtimeloghttp"
@@ -277,6 +279,10 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		// 会话级用量明细:跨当前用户全部 key 的逐请求日志(session 鉴权,按 user_id 收敛)。
 		// 区别于顶层 /v1/me/usage(API-key 鉴权、单 key 维度)。
 		r.Get("/usage-records", meusagehttp.NewSessionHandler(d.billingQueries))
+		// 最终用户按请求 ID 的链路时间线:只看自己的请求,不含账号代号与选号明细。
+		userTrace := requesttracehttp.NewUserHandler(requesttracehttp.Deps{Store: requesttracedb.New(d.pgPool)})
+		r.Get("/requests/{request_id}/trace", userTrace)
+		r.Get("/requests/{request_id_host}/{request_id_tail}/trace", userTrace)
 		meexporthttp.MountRoutes(r, meexporthttp.Deps{Store: d.billingQueries})
 		checkinhttp.MountRoutes(r, checkinhttp.Deps{Service: d.checkinService})
 		userauditloghttp.MountRoutes(r, userauditloghttp.Deps{Store: d.userAuditStore})
@@ -1133,6 +1139,11 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 			Auth: d.adminAuth, Store: tenantcapability.NewStore(d.pgPool),
 		})
 	})
+	// 按请求 ID 的调用链路投影:双角色只读,租户管理员锁本租户,部署者可省略 tenant_id 跨租户按标识查。
+	// 与收据路径同一口径:客户端幂等键可含一个斜杠,用两段路由拼回。
+	adminTrace := requesttracehttp.NewAdminHandler(requesttracehttp.Deps{Auth: d.adminAuth, Store: requesttracedb.New(d.pgPool)})
+	r.Get("/admin/v1/requests/{request_id}/trace", adminTrace)
+	r.Get("/admin/v1/requests/{request_id_host}/{request_id_tail}/trace", adminTrace)
 	r.Route("/admin/v1/pools", func(r chi.Router) {
 		// 按池健康投影是租户作用域只读聚合,静态路径先于池 CRUD 子路由注册,避免被 /{id} 吞掉。
 		r.Get("/health-summary", poolhealthhttp.NewHandler(poolhealthhttp.Deps{Auth: d.adminAuth, Store: d.adminQueries}))
