@@ -192,15 +192,18 @@ type Querier interface {
 	// 按模型/协议/能力清单、模型限流、上游额度、并发与会话容量等按请求维度的门不在本投影内,
 	// 因此 schedulable 表示"健康层放行",不表示某个具体请求一定会选中它:
 	//   unavailable  运维停用 / 渠道停用 / 上游 provider 停用或软删 / 账号已过期 /
-	//                revoked 未到期或无截止 / 无可服务凭据 / 最新 FSM disabled|manual_paused
+	//                revoked 未到期或无截止 / 无可服务凭据 / 最新 FSM disabled|manual_paused /
+	//                auth 降级车道硬禁(disable_cooling 不能豁免)
 	//   cooling_down throttled|cooldown 未到期或无截止 / 最新 FSM cooling_down 且未开 disable_cooling /
-	//                FSM ramping 但放量阶段为空(尚未放行任何流量)且未开 disable_cooling
+	//                FSM ramping 但放量阶段为空(尚未放行任何流量)且未开 disable_cooling /
+	//                auth 降级车道软退避未过期且未开 disable_cooling
 	//   degraded     最新 FSM degraded / FSM ramping 按比例放量(阶段非空)且未开 disable_cooling
-	//   schedulable  其余(数据库层与 FSM 门都放行)
+	//   schedulable  其余(数据库层、FSM 门与 auth 车道都放行)
 	// 最新 FSM 记录按 credential_version DESC, updated_at DESC 取,与健康门读取顺序一致;无记录视为放行。
-	// schedulable_ids / degraded_ids / cooling_ids(及对齐的 cooling_recovery_at)/ cooling_exempt_ids 只回传
-	// 各栏账号 id、冷却账号的已知恢复时刻与 disable_cooling 豁免标记,供进程内 auth 降级车道叠加
-	// (软冷却可被豁免,硬禁不可;硬禁的冷却账号要抬升为 unavailable 并从恢复时刻里剔除),这些 id 不进响应体。
+	// auth 降级车道读跨副本真相表 provider_account_auth_cooldowns,与候选查询同源,不依赖任何副本的内存。
+	// auth_cooldown_accounts 只统计车道真正改变了栏位或恢复时刻的账号(不含因其他原因已 unavailable 的账号,
+	// 也不含数据库层已冷却且恢复未知或车道截止更早的账号)。
+	// earliest_recovery_at 取冷却账号已知恢复时刻的最小值;任一生效冷却无截止的账号视为未知、不参与。
 	SummarizeProviderAccountHealthByPool(ctx context.Context, tenantID int64) ([]SummarizeProviderAccountHealthByPoolRow, error)
 	// 由异步请求完成事件调用,单调记录被动请求观测时间。
 	TouchProviderAccountRequestObservedAt(ctx context.Context, arg TouchProviderAccountRequestObservedAtParams) error

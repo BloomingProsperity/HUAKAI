@@ -497,6 +497,14 @@ RETURNING id, tenant_id, provider_account_id, vendor, auth_mode, state, credenti
 		if err != nil {
 			return credentialAuditPhaseError(credentialAuditTxPhaseMutation, err)
 		}
+		// 显式轮换(导入更新 / 重新授权)意味着旧凭据的鉴权失败历史作废:同一事务内清除该账号的
+		// auth 降级车道真相行,新凭据立即回到各副本的选号候选;刷新 worker 的成功刷新不走这里,
+		// 不会借此解除硬禁。
+		if _, err := txStore.db.Exec(ctx,
+			`DELETE FROM provider_account_auth_cooldowns WHERE provider_account_id = $1`,
+			current.ProviderAccountID); err != nil {
+			return credentialAuditPhaseError(credentialAuditTxPhaseMutation, err)
+		}
 		auditPayload := credentialSubscriptionAuditPayload(meta.Subscription)
 		if targetVendor != current.Vendor || targetAuthMode != current.AuthMode {
 			auditPayload["previous_vendor"] = current.Vendor

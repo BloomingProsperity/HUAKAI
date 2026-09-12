@@ -41,7 +41,8 @@ type CredentialHotRefresher interface {
 }
 
 type AuthCooldown interface {
-	OnRefreshResult(context.Context, int64, bool, bool)
+	// OnRefreshResult(ctx, accountID, observedCredentialVersion, success, permanentFailure)
+	OnRefreshResult(context.Context, int64, int, bool, bool)
 }
 
 type RecentRequests interface {
@@ -541,6 +542,7 @@ func (o *Observer) triggerCredentialRefresh(attempt Attempt) {
 			o.deps.AuthCooldown.OnRefreshResult(
 				ctx,
 				attempt.Account.AccountID,
+				attempt.Account.CredentialVersion,
 				err == nil,
 				err != nil && authcooldown.IsPermanentRefreshError(err),
 			)

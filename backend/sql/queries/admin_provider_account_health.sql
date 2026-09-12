@@ -174,15 +174,18 @@ WHERE id = sqlc.arg(tenant_id)::bigint
 -- 按模型/协议/能力清单、模型限流、上游额度、并发与会话容量等按请求维度的门不在本投影内,
 -- 因此 schedulable 表示"健康层放行",不表示某个具体请求一定会选中它:
 --   unavailable  运维停用 / 渠道停用 / 上游 provider 停用或软删 / 账号已过期 /
---                revoked 未到期或无截止 / 无可服务凭据 / 最新 FSM disabled|manual_paused
+--                revoked 未到期或无截止 / 无可服务凭据 / 最新 FSM disabled|manual_paused /
+--                auth 降级车道硬禁(disable_cooling 不能豁免)
 --   cooling_down throttled|cooldown 未到期或无截止 / 最新 FSM cooling_down 且未开 disable_cooling /
---                FSM ramping 但放量阶段为空(尚未放行任何流量)且未开 disable_cooling
+--                FSM ramping 但放量阶段为空(尚未放行任何流量)且未开 disable_cooling /
+--                auth 降级车道软退避未过期且未开 disable_cooling
 --   degraded     最新 FSM degraded / FSM ramping 按比例放量(阶段非空)且未开 disable_cooling
---   schedulable  其余(数据库层与 FSM 门都放行)
+--   schedulable  其余(数据库层、FSM 门与 auth 车道都放行)
 -- 最新 FSM 记录按 credential_version DESC, updated_at DESC 取,与健康门读取顺序一致;无记录视为放行。
--- schedulable_ids / degraded_ids / cooling_ids(及对齐的 cooling_recovery_at)/ cooling_exempt_ids 只回传
--- 各栏账号 id、冷却账号的已知恢复时刻与 disable_cooling 豁免标记,供进程内 auth 降级车道叠加
--- (软冷却可被豁免,硬禁不可;硬禁的冷却账号要抬升为 unavailable 并从恢复时刻里剔除),这些 id 不进响应体。
+-- auth 降级车道读跨副本真相表 provider_account_auth_cooldowns,与候选查询同源,不依赖任何副本的内存。
+-- auth_cooldown_accounts 只统计车道真正改变了栏位或恢复时刻的账号(不含因其他原因已 unavailable 的账号,
+-- 也不含数据库层已冷却且恢复未知或车道截止更早的账号)。
+-- earliest_recovery_at 取冷却账号已知恢复时刻的最小值;任一生效冷却无截止的账号视为未知、不参与。
 WITH latest_fsm AS (
     SELECT DISTINCT ON (chs.provider_account_id)
         chs.provider_account_id,
@@ -194,11 +197,13 @@ WITH latest_fsm AS (
       AND chs.provider_account_id IS NOT NULL
     ORDER BY chs.provider_account_id, chs.credential_version DESC, chs.updated_at DESC
 ),
-classified AS (
+base AS (
     SELECT
         pg.id AS pool_group_id,
         pa.id AS account_id,
-        COALESCE(pa.disable_cooling, false) AS cooling_exempt,
+        COALESCE(al.hard_disabled, false) AS lane_hard,
+        (al.auth_until IS NOT NULL AND al.auth_until > NOW() AND NOT pa.disable_cooling) AS lane_soft,
+        al.auth_until AS lane_until,
         CASE
             WHEN pa.id IS NULL THEN NULL
             WHEN NOT pa.enabled
@@ -230,9 +235,9 @@ classified AS (
                  OR (lf.state = 'ramping' AND NOT pa.disable_cooling)
                 THEN 'degraded'
             ELSE 'schedulable'
-        END AS account_class,
-        -- 冷却账号最早可能恢复的时刻:数据库健康态截止与 FSM 冷却截止取较晚者(两者都要过);
-        -- 任一生效中的冷却没有截止时间就是未知(NULL),不用另一层的截止冒充。
+        END AS base_class,
+        -- 数据库健康态截止与 FSM 冷却截止取较晚者(两者都要过);任一生效中的冷却没有截止时间
+        -- 就是未知(NULL),不用另一层的截止冒充。
         CASE
             WHEN pa.health_state IN ('throttled', 'cooldown') AND pa.health_state_until IS NULL
                 THEN NULL
@@ -249,7 +254,7 @@ classified AS (
             WHEN lf.state = 'cooling_down' AND NOT pa.disable_cooling
                 THEN lf.cooldown_until
             ELSE NULL
-        END AS recovery_at
+        END AS base_recovery_at
     FROM pool_groups pg
     LEFT JOIN channels c
         ON c.pool_group_id = pg.id
@@ -266,8 +271,45 @@ classified AS (
        AND p.deleted_at IS NULL
     LEFT JOIN latest_fsm lf
         ON lf.provider_account_id = pa.id
+    LEFT JOIN provider_account_auth_cooldowns al
+        ON al.provider_account_id = pa.id
     WHERE pg.tenant_id = sqlc.arg(tenant_id)::bigint
       AND pg.deleted_at IS NULL
+),
+classified AS (
+    SELECT
+        b.pool_group_id,
+        b.account_id,
+        CASE
+            WHEN b.base_class IS NULL THEN NULL
+            WHEN b.base_class = 'unavailable' OR b.lane_hard THEN 'unavailable'
+            WHEN b.base_class = 'cooling_down' OR b.lane_soft THEN 'cooling_down'
+            ELSE b.base_class
+        END AS account_class,
+        -- 车道确实改变了结果才计数:硬禁把非 unavailable 账号抬升;软退避把非冷却账号拉进冷却,
+        -- 或把已冷却账号的已知恢复时刻推后(数据库层恢复未知或车道截止更早时,车道没有改变任何结果)。
+        (
+            b.base_class IS NOT NULL
+            AND b.base_class <> 'unavailable'
+            AND (
+                b.lane_hard
+                OR (b.lane_soft AND b.base_class <> 'cooling_down')
+                OR (b.lane_soft AND b.base_class = 'cooling_down'
+                    AND b.base_recovery_at IS NOT NULL AND b.lane_until > b.base_recovery_at)
+            )
+        ) AS lane_affected,
+        -- 车道软退避叠加:已冷却账号取两层较晚者(数据库层未知仍未知);仅车道冷却的账号取车道截止。
+        CASE
+            WHEN b.base_class = 'cooling_down' THEN
+                CASE
+                    WHEN b.base_recovery_at IS NULL THEN NULL
+                    WHEN b.lane_soft THEN GREATEST(b.base_recovery_at, b.lane_until)
+                    ELSE b.base_recovery_at
+                END
+            WHEN b.lane_soft THEN b.lane_until
+            ELSE NULL
+        END AS recovery_at
+    FROM base b
 )
 SELECT
     pg.id AS pool_group_id,
@@ -278,31 +320,8 @@ SELECT
     count(*) FILTER (WHERE cl.account_class = 'degraded')::bigint AS degraded_accounts,
     count(*) FILTER (WHERE cl.account_class = 'cooling_down')::bigint AS cooling_down_accounts,
     count(*) FILTER (WHERE cl.account_class = 'unavailable')::bigint AS unavailable_accounts,
-    COALESCE(
-        array_agg(cl.account_id ORDER BY cl.account_id)
-            FILTER (WHERE cl.account_class = 'schedulable'),
-        ARRAY[]::bigint[]
-    )::bigint[] AS schedulable_ids,
-    COALESCE(
-        array_agg(cl.account_id ORDER BY cl.account_id)
-            FILTER (WHERE cl.account_class = 'degraded'),
-        ARRAY[]::bigint[]
-    )::bigint[] AS degraded_ids,
-    COALESCE(
-        array_agg(cl.account_id ORDER BY cl.account_id)
-            FILTER (WHERE cl.account_class = 'cooling_down'),
-        ARRAY[]::bigint[]
-    )::bigint[] AS cooling_ids,
-    COALESCE(
-        array_agg(cl.recovery_at ORDER BY cl.account_id)
-            FILTER (WHERE cl.account_class = 'cooling_down'),
-        ARRAY[]::timestamptz[]
-    )::timestamptz[] AS cooling_recovery_at,
-    COALESCE(
-        array_agg(cl.account_id ORDER BY cl.account_id)
-            FILTER (WHERE cl.account_class <> 'unavailable' AND cl.cooling_exempt),
-        ARRAY[]::bigint[]
-    )::bigint[] AS cooling_exempt_ids
+    count(*) FILTER (WHERE cl.lane_affected)::bigint AS auth_cooldown_accounts,
+    (min(cl.recovery_at) FILTER (WHERE cl.account_class = 'cooling_down'))::timestamptz AS earliest_recovery_at
 FROM pool_groups pg
 LEFT JOIN classified cl ON cl.pool_group_id = pg.id
 WHERE pg.tenant_id = sqlc.arg(tenant_id)::bigint

@@ -630,8 +630,15 @@ func TestProviderAccountSchedulingDisableCoolingBypassesOnlySoftRuntimeLanes(t *
 		!body.Scheduling.AuthCooldown.BypassedByDisableCooling {
 		t.Fatalf("disable_cooling 未按 selector 豁免软车道：%+v", body.Scheduling)
 	}
+	// 运营可见字段:软退避暴露失败类别与最近升级时刻;纯进程内车道 persistence=process_local。
+	if body.Scheduling.AuthCooldown.FailureClass != "ambiguous" ||
+		body.Scheduling.AuthCooldown.LastEscalatedAt == nil || *body.Scheduling.AuthCooldown.LastEscalatedAt != now.Format(time.RFC3339Nano) ||
+		body.Scheduling.AuthCooldown.HardDisabledAt != nil ||
+		body.Scheduling.AuthCooldown.Persistence != "process_local" {
+		t.Fatalf("软退避的运营字段不符：%+v", body.Scheduling.AuthCooldown)
+	}
 
-	authStore.OnRefreshResult(context.Background(), 110, false, true)
+	authStore.OnRefreshResult(context.Background(), 110, 0, false, true)
 	rec = invokeProviderAccountHealth(t, deps, "/admin/v1/provider-accounts/110/health")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("hard disabled status=%d body=%s", rec.Code, rec.Body.String())
@@ -645,6 +652,65 @@ func TestProviderAccountSchedulingDisableCoolingBypassesOnlySoftRuntimeLanes(t *
 		!containsString(body.Scheduling.BlockingReasons, "auth_cooldown") {
 		t.Fatalf("disable_cooling 不得豁免 auth hard disable：%+v", body.Scheduling)
 	}
+	if body.Scheduling.AuthCooldown.FailureClass != "refresh_permanent" || body.Scheduling.AuthCooldown.HardDisabledAt == nil {
+		t.Fatalf("硬禁的运营字段不符：%+v", body.Scheduling.AuthCooldown)
+	}
+}
+
+// 配置了持久化后端时,诊断轴的 persistence 透传后端种类,且字段来自真相快照。
+func TestProviderAccountSchedulingAuthPersistenceIsPassedThrough(t *testing.T) {
+	now := time.Date(2026, 7, 16, 10, 0, 0, 0, time.UTC)
+	row := providerAccountHealthRow(7, 111)
+	store := newProviderAccountHealthStoreStub()
+	store.put(row)
+	until := now.Add(time.Minute)
+	authStore := authcooldown.NewPersistentStore(authcooldown.Config{}, staticAuthPersistence{state: authcooldown.PersistedState{
+		AccountID: 111, Strike: 2, AuthUntil: until, CredentialVersion: 3, FailureClass: "iron_clad", LastEscalatedAt: now,
+	}})
+	deps := ProviderAccountHealthDeps{
+		Auth:         providerAccountHealthAuthStub{ident: tenantOperator(7)},
+		Store:        store,
+		AuthCooldown: authStore,
+		Now:          func() time.Time { return now.Add(time.Second) },
+	}
+	rec := invokeProviderAccountHealth(t, deps, "/admin/v1/provider-accounts/111/health")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body providerAccountHealthResponseBody
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode：%v", err)
+	}
+	axis := body.Scheduling.AuthCooldown
+	if axis.Persistence != "postgres" || !axis.RecordFound || axis.Eligibility != "blocked" || axis.Strike != 2 ||
+		axis.CredentialVersion != 3 || axis.FailureClass != "iron_clad" || axis.AuthUntil == nil || axis.LastEscalatedAt == nil {
+		t.Fatalf("持久化车道的诊断轴不符：%+v", axis)
+	}
+}
+
+// staticAuthPersistence 是只读的真相后端替身:Get 恒返回给定状态,写操作不应被诊断接口触发。
+type staticAuthPersistence struct {
+	state authcooldown.PersistedState
+}
+
+func (staticAuthPersistence) Kind() string { return "postgres" }
+func (staticAuthPersistence) RecordFailure(context.Context, int64, authcooldown.FailureClass, int, time.Time, authcooldown.Config) (authcooldown.PersistedState, bool, error) {
+	return authcooldown.PersistedState{}, false, errors.New("unexpected write")
+}
+func (staticAuthPersistence) MarkHardDisabled(context.Context, int64, int, string, time.Time, time.Time) (authcooldown.PersistedState, bool, error) {
+	return authcooldown.PersistedState{}, false, errors.New("unexpected write")
+}
+func (staticAuthPersistence) Clear(context.Context, int64, bool, time.Time) (bool, error) {
+	return false, errors.New("unexpected write")
+}
+func (p staticAuthPersistence) Get(_ context.Context, accountID int64) (authcooldown.PersistedState, bool, error) {
+	if accountID != p.state.AccountID {
+		return authcooldown.PersistedState{}, false, nil
+	}
+	return p.state, true, nil
+}
+func (p staticAuthPersistence) List(context.Context) ([]authcooldown.PersistedState, error) {
+	return []authcooldown.PersistedState{p.state}, nil
 }
 
 func TestProviderAccountSchedulingRampingAndModelCooldownAreRequestDependent(t *testing.T) {

@@ -77,12 +77,12 @@ func TestClassify_R024_R025_GrokBadKey400(t *testing.T) {
 	}
 }
 
-// TestClassify_GrokAuthRulesGatedByKnob(审查 S1):knob 关(默认生产态)时 R-024/R-025 与
-// xai→grok 归一化必须不生效——grok/xai 400 坏 key 保持基底行为(R-016 unknown → 400 原样透传
-// + error-rate 健康记账),客户端契约与健康记账零变化。判别:去掉 matchRule 的 RequiresAuthLane
-// 门控或 normalizeProvider 的 knob 判断 → 命中 R-024,断言红。
+// TestClassify_GrokAuthRulesGatedByKnob(审查 S1):开关显式关闭(HUAKAI_AUTH_COOLDOWN_ENABLED=false
+// 逃生阀,非默认态)时 R-024/R-025 与 xai→grok 归一化必须不生效——grok/xai 400 坏 key 保持基底行为
+// (R-016 unknown → 400 原样透传 + error-rate 健康记账),客户端契约与健康记账零变化。
+// 判别:去掉 matchRule 的 RequiresAuthLane 门控或 normalizeProvider 的开关判断 → 命中 R-024,断言红。
 func TestClassify_GrokAuthRulesGatedByKnob(t *testing.T) {
-	// 不 enable(模拟默认关);防其它测试残留,显式置 false 并还原。
+	// 模拟显式关闭;防其它测试残留,显式置 false 并还原。
 	SetAuthLaneRulesEnabled(false)
 	t.Cleanup(func() { SetAuthLaneRulesEnabled(false) })
 	for _, provider := range []string{"grok", "xai"} {

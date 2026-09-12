@@ -47,7 +47,7 @@ type providerAccountSchedulingChannelHealth interface {
 }
 
 type providerAccountSchedulingAuthCooldown interface {
-	Snapshot(int64, time.Time) authcooldown.Snapshot
+	Snapshot(context.Context, int64, time.Time) authcooldown.Snapshot
 }
 
 type providerAccountHealthResponseBody struct {
@@ -139,7 +139,7 @@ func newProviderAccountHealthHandler(d ProviderAccountHealthDeps) http.HandlerFu
 		authSnapshot := authcooldown.Snapshot{Eligible: true}
 		authConfigured := d.AuthCooldown != nil
 		if authConfigured {
-			authSnapshot = d.AuthCooldown.Snapshot(id, at)
+			authSnapshot = d.AuthCooldown.Snapshot(r.Context(), id, at)
 		}
 		body, err := providerAccountHealthResponseWithSchedulingAt(
 			row, d.RecentReqRing, at, channelRecord, channelRecordFound, authSnapshot, authConfigured,

@@ -34,8 +34,11 @@ import (
 // HUAKAI_AUTH_COOLDOWN_ENABLED 同源生效(审查 S1:开关关闭=行为逐字节不变是本片可落地根基)。
 var authLaneRulesEnabled atomic.Bool
 
-// SetAuthLaneRulesEnabled 由 wiring 启动期调用一次,与 auth 车道 knob 同源;测试可临时翻转(须还原)。
+// SetAuthLaneRulesEnabled 由 wiring 启动期调用一次,与 auth 车道开关同源;测试可临时翻转(须还原)。
 func SetAuthLaneRulesEnabled(on bool) { authLaneRulesEnabled.Store(on) }
+
+// AuthLaneRulesEnabled 报告车道绑定分类规则当前是否生效,供装配测试与诊断核对开关同源。
+func AuthLaneRulesEnabled() bool { return authLaneRulesEnabled.Load() }
 
 // AuthFailureClassFromClassification 把上游分类映射为 auth 降级车道的确定性分级:
 // token_revoked/关键词 invalid_grant(R-001)/Grok 400-auth → iron-clad(可硬禁);

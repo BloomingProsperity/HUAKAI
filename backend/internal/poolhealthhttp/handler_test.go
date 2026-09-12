@@ -14,7 +14,6 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
-	"github.com/BloomingProsperity/HUAKAI/internal/authcooldown"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 )
 
@@ -66,18 +65,6 @@ func (s *storeStub) CountUnpooledProviderAccounts(_ context.Context, tenantID in
 	return s.unpooled[tenantID], nil
 }
 
-// laneStub 是 auth 降级车道快照的可控替身。
-type laneStub struct {
-	snaps map[int64]authcooldown.Snapshot
-}
-
-func (l laneStub) Snapshot(id int64, _ time.Time) authcooldown.Snapshot {
-	if snap, ok := l.snaps[id]; ok {
-		return snap
-	}
-	return authcooldown.Snapshot{Eligible: true}
-}
-
 var fixedNow = time.Date(2026, 9, 12, 6, 0, 0, 0, time.UTC)
 
 func platformAdmin() admin.AdminIdentity {
@@ -93,22 +80,19 @@ func ts(t time.Time) pgtype.Timestamptz {
 }
 
 func samplePool(id int64, name string) admindb.SummarizeProviderAccountHealthByPoolRow {
-	// 8 个账号:4 可调度(101-104)、1 降级(105)、2 冷却(106 已知 +10m 恢复、107 已知 +30m 恢复)、
-	// 1 不可用(108,不在任何数组里);104、105、107 开了 disable_cooling。
+	// 8 个账号:4 可调度、1 降级、2 冷却(最早已知恢复 +10m)、1 不可用;其中 1 个账号的栏位由
+	// auth 降级车道决定(SQL 已折算进 cooling_down/unavailable,这里只回传计数)。
 	return admindb.SummarizeProviderAccountHealthByPoolRow{
-		PoolGroupID:         id,
-		PoolName:            name,
-		PoolEnabled:         true,
-		TotalAccounts:       8,
-		SchedulableAccounts: 4,
-		DegradedAccounts:    1,
-		CoolingDownAccounts: 2,
-		UnavailableAccounts: 1,
-		SchedulableIds:      []int64{101, 102, 103, 104},
-		DegradedIds:         []int64{105},
-		CoolingIds:          []int64{106, 107},
-		CoolingRecoveryAt:   []pgtype.Timestamptz{ts(fixedNow.Add(10 * time.Minute)), ts(fixedNow.Add(30 * time.Minute))},
-		CoolingExemptIds:    []int64{104, 105, 107},
+		PoolGroupID:          id,
+		PoolName:             name,
+		PoolEnabled:          true,
+		TotalAccounts:        8,
+		SchedulableAccounts:  4,
+		DegradedAccounts:     1,
+		CoolingDownAccounts:  2,
+		UnavailableAccounts:  1,
+		AuthCooldownAccounts: 1,
+		EarliestRecoveryAt:   ts(fixedNow.Add(10 * time.Minute)),
 	}
 }
 
@@ -148,7 +132,7 @@ func expectError(t *testing.T, rec *httptest.ResponseRecorder, status int, code 
 
 // 无车道叠加时,投影必须逐列等于数据库分栏;占比按分母四位小数;
 // 停用池状态 disabled 且 0/0 占比不产生 NaN;totals 跨池合计,unpooled 单列。
-func TestHandlerProjectsDatabaseColumnsWithoutLane(t *testing.T) {
+func TestHandlerProjectsSQLColumns(t *testing.T) {
 	store := newStore()
 	rec, body := do(t, Deps{Auth: authStub{ident: platformAdmin()}, Store: store}, "/?tenant_id=7")
 	if rec.Code != http.StatusOK {
@@ -163,7 +147,7 @@ func TestHandlerProjectsDatabaseColumnsWithoutLane(t *testing.T) {
 	p := body.Pools[0]
 	if p.PoolGroupID != 1 || p.Status != PoolStatusDegraded || p.TotalAccounts != 8 ||
 		p.SchedulableAccounts != 4 || p.DegradedAccounts != 1 || p.CoolingDownAccounts != 2 || p.UnavailableAccounts != 1 ||
-		p.AuthCooldownAccounts != 0 {
+		p.AuthCooldownAccounts != 1 {
 		t.Fatalf("池 1 计数不符: %+v", p)
 	}
 	if p.SchedulableRatio != "0.5000" || p.DegradedRatio != "0.1250" || p.CoolingDownRatio != "0.2500" || p.UnavailableRatio != "0.1250" {
@@ -177,7 +161,7 @@ func TestHandlerProjectsDatabaseColumnsWithoutLane(t *testing.T) {
 		t.Fatalf("停用空池投影不符: %+v", spare)
 	}
 	if body.Totals.Pools != 2 || body.Totals.TotalAccounts != 8 || body.Totals.SchedulableAccounts != 4 ||
-		body.Totals.CoolingDownAccounts != 2 || body.Totals.UnavailableAccounts != 1 {
+		body.Totals.CoolingDownAccounts != 2 || body.Totals.UnavailableAccounts != 1 || body.Totals.AuthCooldownAccounts != 1 {
 		t.Fatalf("totals 不符: %+v", body.Totals)
 	}
 	// 响应只含池标识与计数:任何账号 id 数组都不得出现在响应体里。
@@ -188,71 +172,27 @@ func TestHandlerProjectsDatabaseColumnsWithoutLane(t *testing.T) {
 	}
 }
 
-// auth 降级车道叠加:硬禁账号从可调度降到不可用;临时冷却账号降到冷却,且 auth 冷却截止
-// 早于数据库恢复时刻时覆盖最早恢复;开了 disable_cooling 的账号豁免软冷却但不豁免硬禁;
-// 判别:去掉叠加则四个计数与无车道用例相同,本断言必红。
-func TestHandlerOverlaysAuthCooldownLane(t *testing.T) {
+// 恢复时刻只在仍有冷却账号且 SQL 给出已知时刻时输出:冷却账号恢复时刻全部未知(NULL)→ 省略;
+// 没有冷却账号即使 SQL 带了时刻也不输出(不存在需要等待的账号)。
+func TestRecoveryTimeOnlyWhenKnownAndCooling(t *testing.T) {
 	store := newStore()
-	authUntil := fixedNow.Add(2 * time.Minute)
-	lane := laneStub{snaps: map[int64]authcooldown.Snapshot{
-		101: {Found: true, Eligible: false, HardDisabled: true},             // 硬禁 → unavailable
-		102: {Found: true, Eligible: false, AuthUntil: &authUntil},          // 软冷却 → cooling_down
-		104: {Found: true, Eligible: false, AuthUntil: &authUntil},          // 软冷却但 disable_cooling 豁免 → 仍 schedulable
-		105: {Found: true, Eligible: false, HardDisabled: true},             // 降级账号被硬禁 → unavailable(豁免无效)
-		103: {Found: true, Eligible: true, Strike: 1, AuthUntil: &fixedNow}, // 冷却已过期 → 不动
-		106: {Found: true, Eligible: false, HardDisabled: true},             // 数据库层冷却账号被硬禁 → 抬升 unavailable,恢复时刻剔除
-		107: {Found: true, Eligible: false, AuthUntil: &authUntil},          // 冷却账号软冷却但豁免 → 仍 cooling_down,不计 auth
-		999: {Found: true, Eligible: false, HardDisabled: true},             // 不在候选集(已是 unavailable)→ 不重复计
-	}}
-	rec, body := do(t, Deps{Auth: authStub{ident: platformAdmin()}, Store: store, AuthCooldown: lane}, "/?tenant_id=7")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("状态=%d body=%s", rec.Code, rec.Body.String())
-	}
-	p := body.Pools[0]
-	if p.TotalAccounts != 8 || p.SchedulableAccounts != 2 || p.DegradedAccounts != 0 ||
-		p.CoolingDownAccounts != 2 || p.UnavailableAccounts != 4 || p.AuthCooldownAccounts != 4 {
-		t.Fatalf("叠加后计数不符: %+v", p)
-	}
-	if p.SchedulableAccounts+p.DegradedAccounts+p.CoolingDownAccounts+p.UnavailableAccounts != p.TotalAccounts {
-		t.Fatalf("四栏之和 != total: %+v", p)
-	}
-	if p.EarliestRecoveryAt == nil || *p.EarliestRecoveryAt != "2026-09-12T06:02:00Z" {
-		t.Fatalf("auth 冷却更早应覆盖最早恢复时刻: %v", p.EarliestRecoveryAt)
-	}
-	if p.Status != PoolStatusDegraded {
-		t.Fatalf("状态=%s，期望 degraded", p.Status)
-	}
-}
-
-// 恢复时刻的三条规则:数据库层冷却账号被硬禁后不再贡献恢复时刻(否则运营会把需人工恢复的号
-// 看成到点自愈);冷却账号叠加更晚的 auth 冷却时取两层较晚者;已知恢复为空的账号不参与最小值。
-// 判别:去掉硬禁剔除 → 期望 +30m 处得到 +10m;去掉较晚者规则 → 期望 +12m 处得到 +10m。
-func TestRecoveryTimeFollowsOverlay(t *testing.T) {
-	store := newStore()
-	hardOnly := laneStub{snaps: map[int64]authcooldown.Snapshot{106: {Found: true, Eligible: false, HardDisabled: true}}}
-	_, body := do(t, Deps{Auth: authStub{ident: platformAdmin()}, Store: store, AuthCooldown: hardOnly}, "/?tenant_id=7")
-	p := body.Pools[0]
-	if p.CoolingDownAccounts != 1 || p.UnavailableAccounts != 2 || p.EarliestRecoveryAt == nil || *p.EarliestRecoveryAt != "2026-09-12T06:30:00Z" {
-		t.Fatalf("硬禁冷却账号应剔除出恢复时刻: %+v", p)
-	}
-	later := fixedNow.Add(12 * time.Minute)
-	softLater := laneStub{snaps: map[int64]authcooldown.Snapshot{106: {Found: true, Eligible: false, AuthUntil: &later}}}
-	_, body = do(t, Deps{Auth: authStub{ident: platformAdmin()}, Store: store, AuthCooldown: softLater}, "/?tenant_id=7")
-	p = body.Pools[0]
-	if p.CoolingDownAccounts != 2 || p.AuthCooldownAccounts != 1 || p.EarliestRecoveryAt == nil || *p.EarliestRecoveryAt != "2026-09-12T06:12:00Z" {
-		t.Fatalf("冷却账号叠加更晚的 auth 冷却应取较晚者: %+v", p)
-	}
-	unknown := samplePool(3, "unknown")
-	unknown.CoolingRecoveryAt = []pgtype.Timestamptz{{}, ts(fixedNow.Add(30 * time.Minute))}
+	unknown := samplePool(1, "primary")
+	unknown.EarliestRecoveryAt = pgtype.Timestamptz{}
 	store.rows[7] = []admindb.SummarizeProviderAccountHealthByPoolRow{unknown}
+	_, body := do(t, Deps{Auth: authStub{ident: platformAdmin()}, Store: store}, "/?tenant_id=7")
+	if body.Pools[0].CoolingDownAccounts != 2 || body.Pools[0].EarliestRecoveryAt != nil {
+		t.Fatalf("恢复时刻未知时不得输出: %+v", body.Pools[0])
+	}
+	none := samplePool(1, "primary")
+	none.CoolingDownAccounts = 0
+	none.UnavailableAccounts = 3
+	store.rows[7] = []admindb.SummarizeProviderAccountHealthByPoolRow{none}
 	_, body = do(t, Deps{Auth: authStub{ident: platformAdmin()}, Store: store}, "/?tenant_id=7")
-	if got := body.Pools[0].EarliestRecoveryAt; got == nil || *got != "2026-09-12T06:30:00Z" {
-		t.Fatalf("未知恢复时刻不得参与最小值: %v", got)
+	if body.Pools[0].EarliestRecoveryAt != nil {
+		t.Fatalf("没有冷却账号时不得输出恢复时刻: %+v", body.Pools[0])
 	}
 }
 
-// 全部候选被硬禁 → 池状态抬升为 unavailable(全部子单元不可调度才抬升);
-// 全部完全可调度 → healthy。
 func TestPoolStatusEscalation(t *testing.T) {
 	all := PoolHealth{PoolEnabled: true, TotalAccounts: 3, SchedulableAccounts: 3}
 	if got := poolStatus(all); got != PoolStatusHealthy {

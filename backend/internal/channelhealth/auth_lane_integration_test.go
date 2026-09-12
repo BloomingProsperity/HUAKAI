@@ -64,7 +64,7 @@ func TestAuthLane_ChallengeSuspendsWithoutHealthChange(t *testing.T) {
 	}
 }
 
-// TestAuthLane_SuccessClears:一次成功请求(SignalSuccess)即时清 auth 车道(等价 CLIProxy self-heal)。
+// TestAuthLane_SuccessClears:一次成功请求(SignalSuccess)即时清 auth 车道的软退避(strike 归零)。
 // 判别:去掉 applySignal 成功分支的 Clear → 成功后仍被排除 → 断言红。
 func TestAuthLane_SuccessClears(t *testing.T) {
 	ctx, svc, _, _, clock, key := authLaneTestSetup(t)
@@ -101,7 +101,7 @@ func TestAuthLane_DisableCoolingExemptsSoftNotHard(t *testing.T) {
 		t.Fatalf("DisableCooling 应豁免软退避,却被拒 why=%s", why)
 	}
 	// 硬禁 + DisableCooling → 不豁免(仍排除)。
-	lane.OnRefreshResult(ctx, key.ProviderAccountID, false, true)
+	lane.OnRefreshResult(ctx, key.ProviderAccountID, 0, false, true)
 	if ok, _, _ := gate.Allow(ctx, snap, authReq(key)); ok {
 		t.Fatal("DisableCooling 不应豁免 HardDisabled(否则给 revoked 号重开黑洞)")
 	}
@@ -114,7 +114,7 @@ func TestAuthLane_OperatorResumeClears(t *testing.T) {
 	gate := NewServicePoolGate(svc, clock)
 
 	// 死号:热刷新证实 invalid_grant → HardDisabled。
-	lane.OnRefreshResult(ctx, key.ProviderAccountID, false, true)
+	lane.OnRefreshResult(ctx, key.ProviderAccountID, 0, false, true)
 	if ok, _, _ := gate.Allow(ctx, authSnapshot(key), authReq(key)); ok {
 		t.Fatal("前置:HardDisabled 死号应被排除")
 	}
@@ -128,7 +128,7 @@ func TestAuthLane_OperatorResumeClears(t *testing.T) {
 	}
 
 	// ManualResume 同样清车道(经车道直查,避开 ramping 概率准入的干扰)。
-	lane.OnRefreshResult(ctx, key.ProviderAccountID, false, true)
+	lane.OnRefreshResult(ctx, key.ProviderAccountID, 0, false, true)
 	if _, err := svc.ManualResume(ctx, key, "operator-1", "manual recovery"); err != nil {
 		t.Fatalf("ManualResume: %v", err)
 	}
