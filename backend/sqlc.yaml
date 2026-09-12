@@ -46,6 +46,32 @@ sql:
   - engine: postgresql
     schema: sql/migrations
     queries:
+      - sql/queries/request_trace.sql
+    gen:
+      go:
+        package: requesttracedb
+        out: internal/db/requesttracedb
+        sql_package: pgx/v5
+        emit_json_tags: true
+        emit_db_tags: true
+        emit_pointers_for_null_types: true
+        emit_interface: true
+        omit_unused_structs: true
+        emit_methods_with_db_argument: false
+        emit_prepared_queries: false
+        rename:
+          tenant_id: TenantID
+          api_key_id: APIKeyID
+          provider_account_id: ProviderAccountID
+          pooling_group_id: PoolingGroupID
+          channel_id: ChannelID
+          logical_request_id: LogicalRequestID
+          ledger_id: LedgerID
+          claim_id: ClaimID
+          user_id: UserID
+  - engine: postgresql
+    schema: sql/migrations
+    queries:
       - sql/queries/auth_cooldown_lane.sql
     gen:
       go:

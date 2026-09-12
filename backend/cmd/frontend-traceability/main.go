@@ -370,6 +370,10 @@ func effectiveSpec(op operation, base tagSpec) tagSpec {
 		return tagSpec{"公共排行", "internal/publicrankinghttp", "FE-PG-002", "公共排行"}
 	case path == "/admin/v1/pools/health-summary":
 		return tagSpec{"运营聚合", "internal/poolhealthhttp", "FE-PG-002", "按池健康投影"}
+	case strings.Contains(path, "/requests/{request_id") && strings.HasSuffix(path, "/trace") && strings.HasPrefix(path, "/admin/"):
+		return tagSpec{"运营聚合", "internal/requesttracehttp", "FE-PG-002", "按请求 ID 的脱敏链路时间线"}
+	case strings.Contains(path, "/requests/{request_id") && strings.HasSuffix(path, "/trace"):
+		return tagSpec{"用户用量与凭证", "internal/requesttracehttp", "FE-PG-007", "本人请求的脱敏链路时间线"}
 	case strings.Contains(path, "/orders/export") || strings.Contains(path, "/refunds/export"):
 		return tagSpec{"资金数据导出", "internal/paymenthttp", "FE-PG-005", "订单与退款导出"}
 	case strings.Contains(path, "/pricing/models/audit"):
@@ -421,6 +425,10 @@ func classify(op operation, base tagSpec) (page, scene string, integration bool)
 		return "FE-PG-002", "本租户缓存构成", false
 	case path == "/admin/v1/pools/health-summary":
 		return "FE-PG-002", "本租户按池健康投影", false
+	case strings.Contains(path, "/requests/{request_id") && strings.HasSuffix(path, "/trace") && strings.HasPrefix(path, "/admin/"):
+		return "FE-PG-002", "本租户按请求 ID 的链路时间线", false
+	case strings.Contains(path, "/requests/{request_id") && strings.HasSuffix(path, "/trace"):
+		return "FE-PG-007", "本人请求的链路时间线", false
 	case strings.Contains(path, "/admin/v1/usage/hourly"):
 		return "FE-PG-002", "本租户小时趋势", false
 	case strings.Contains(path, "/admin/v1/usage/overview"):
