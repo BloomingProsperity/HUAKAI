@@ -75,6 +75,9 @@ type Querier interface {
 	// 两种键(legacy_actor_id=老格式;无老格式的来源传同一串,OR 无副作用),窗口跨
 	// 格式迁移连续,且不需要新列/回填(数值列方案会再造一次同类边界重置)。
 	CountIssuanceInWindow(ctx context.Context, arg CountIssuanceInWindowParams) (int64, error)
+	// 未挂在任何有效池下的未删账号(渠道或池已软删):按池投影不含它们,单列出来让
+	// Σ池.total_accounts + unpooled == SummarizeProviderAccountHealth 的总数可对账。
+	CountUnpooledProviderAccounts(ctx context.Context, tenantID int64) (int64, error)
 	// 渠道目录写操作。三个请求改写字段均在 channels 上维护。
 	// pool_group 必须属于同租户(EXISTS 守卫防跨租户链接);name 唯一冲突由
 	// uq_channels_tenant_pool_name 抛 23505。
@@ -96,6 +99,9 @@ type Querier interface {
 	// pre-checks and idempotency decisions. Soft-deleted rows are excluded.
 	GetAdminTokenByID(ctx context.Context, id int64) (GetAdminTokenByIDRow, error)
 	GetChannelTestTemplate(ctx context.Context, arg GetChannelTestTemplateParams) (ChannelTestTemplate, error)
+	// 按池健康投影的租户存在性门:部署者显式指定的 tenant_id 指向不存在或已软删的租户时
+	// 必须返回可辨识的 404,而不是把它当成空租户放行成空投影。租户 status 不影响只读投影,不取。
+	GetPoolHealthTenant(ctx context.Context, tenantID int64) (int64, error)
 	// P0 provider/channel admin catalog queries.
 	// Read-only directory data for admin UI. These SELECT lists intentionally
 	// exclude tenant_id and every credential-bearing provider_accounts column.
@@ -179,6 +185,23 @@ type Querier interface {
 	// 账号池健康聚合(B9 运维巡检):按 (health_state, enabled) 计数,跨整个租户池(非分页)。
 	// 只读、不含钱字段;供管理端一眼看清问题账号分布。软删账号排除。
 	SummarizeProviderAccountHealth(ctx context.Context, tenantID int64) ([]SummarizeProviderAccountHealthRow, error)
+	// 按账号池聚合的账号调度健康投影(FE-GAP-002 第四切),服务端一次算完,不倒行给浏览器求和。
+	// 分母 = 该池下经未软删渠道挂接的未软删账号(含运维停用账号)。每个账号恰属一个渠道、一个池,
+	// 不会重复计数。分类互斥,优先级 unavailable > cooling_down > degraded > schedulable,
+	// 谓词逐字对齐选号候选查询(ListEligibleAccountsByPoolGroup)与进程内健康门中**与请求无关**的账号级判定;
+	// 按模型/协议/能力清单、模型限流、上游额度、并发与会话容量等按请求维度的门不在本投影内,
+	// 因此 schedulable 表示"健康层放行",不表示某个具体请求一定会选中它:
+	//   unavailable  运维停用 / 渠道停用 / 上游 provider 停用或软删 / 账号已过期 /
+	//                revoked 未到期或无截止 / 无可服务凭据 / 最新 FSM disabled|manual_paused
+	//   cooling_down throttled|cooldown 未到期或无截止 / 最新 FSM cooling_down 且未开 disable_cooling /
+	//                FSM ramping 但放量阶段为空(尚未放行任何流量)且未开 disable_cooling
+	//   degraded     最新 FSM degraded / FSM ramping 按比例放量(阶段非空)且未开 disable_cooling
+	//   schedulable  其余(数据库层与 FSM 门都放行)
+	// 最新 FSM 记录按 credential_version DESC, updated_at DESC 取,与健康门读取顺序一致;无记录视为放行。
+	// schedulable_ids / degraded_ids / cooling_ids(及对齐的 cooling_recovery_at)/ cooling_exempt_ids 只回传
+	// 各栏账号 id、冷却账号的已知恢复时刻与 disable_cooling 豁免标记,供进程内 auth 降级车道叠加
+	// (软冷却可被豁免,硬禁不可;硬禁的冷却账号要抬升为 unavailable 并从恢复时刻里剔除),这些 id 不进响应体。
+	SummarizeProviderAccountHealthByPool(ctx context.Context, tenantID int64) ([]SummarizeProviderAccountHealthByPoolRow, error)
 	// 由异步请求完成事件调用,单调记录被动请求观测时间。
 	TouchProviderAccountRequestObservedAt(ctx context.Context, arg TouchProviderAccountRequestObservedAtParams) error
 	UpdateAdminProviderAccountRaw(ctx context.Context, arg UpdateAdminProviderAccountRawParams) (UpdateAdminProviderAccountRawRow, error)

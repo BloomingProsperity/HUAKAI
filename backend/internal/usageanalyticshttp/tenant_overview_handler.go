@@ -2,13 +2,12 @@ package usageanalyticshttp
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/adminhttpcore"
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 	dboverview "github.com/BloomingProsperity/HUAKAI/internal/db/usageoverview"
 )
@@ -115,44 +114,14 @@ func tenantOverviewSnapshotCacheKey(tenantID int64, query overviewQuery) string 
 	return "admin_tenant_usage_overview:v1|tenant=" + strconv.FormatInt(tenantID, 10) + "|window=" + query.windowLabel
 }
 
+// tenantOverviewTenantFromQuery 委托给 adminhttpcore 的双角色租户作用域解析唯一实现，
+// 三个租户作用域聚合接口共用同一套 400/401/403/503 合同。
 func tenantOverviewTenantFromQuery(w http.ResponseWriter, r *http.Request, ident admin.AdminIdentity) (int64, bool) {
-	raw := strings.TrimSpace(r.URL.Query().Get("tenant_id"))
-	if raw == "" && ident.Role == admin.RoleTenantOperator {
-		return tenantOverviewTenantFromValue(w, ident, ident.ScopeTenantID)
-	}
-	if raw == "" {
-		writeJSONError(w, http.StatusBadRequest, "tenant_id_required", "tenant_id query parameter must be positive")
-		return 0, false
-	}
-	tenantID, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil || tenantID <= 0 {
-		writeJSONError(w, http.StatusBadRequest, "invalid_tenant_id", "tenant_id must be a positive int64")
-		return 0, false
-	}
-	return tenantOverviewTenantFromValue(w, ident, tenantID)
-}
-
-func tenantOverviewTenantFromValue(w http.ResponseWriter, ident admin.AdminIdentity, tenantID int64) (int64, bool) {
-	if tenantID <= 0 {
-		writeJSONError(w, http.StatusBadRequest, "tenant_id_required", "tenant_id must be positive")
-		return 0, false
-	}
-	if err := ident.CanIssueForTenant(tenantID); err != nil {
-		writeTenantOverviewAdminError(w, err)
-		return 0, false
-	}
-	return tenantID, true
+	return adminhttpcore.ResolveTenantScopeQuery(w, r, ident)
 }
 
 func writeTenantOverviewAdminError(w http.ResponseWriter, err error) {
-	switch {
-	case errors.Is(err, admin.ErrAdminBackend):
-		writeJSONError(w, http.StatusServiceUnavailable, "admin_backend_error", "admin auth backend transient failure")
-	case errors.Is(err, admin.ErrAdminForbidden):
-		writeJSONError(w, http.StatusForbidden, "admin_forbidden", "caller cannot act on this tenant scope")
-	default:
-		writeJSONError(w, http.StatusUnauthorized, "admin_unauthorized", "missing or invalid admin credential")
-	}
+	adminhttpcore.WriteTenantScopeAuthError(w, err)
 }
 
 func tenantOverviewTotalsToPlatform(row dboverview.AggregateTenantUsageOverviewTotalsRow) dbbilling.AggregateUsageOverviewTotalsRow {

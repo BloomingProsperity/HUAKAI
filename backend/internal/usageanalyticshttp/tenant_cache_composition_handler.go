@@ -141,10 +141,10 @@ func cacheCompositionFromRow(row dboverview.AggregateTenantUsageCacheComposition
 		return cacheComposition{}, err
 	}
 	return cacheComposition{
-		PromptCacheCreationTokens: row.PromptCacheCreationTokens,
-		PromptCacheReadTokens:     row.PromptCacheReadTokens,
-		PromptCacheCreationCost:   createCost,
-		PromptCacheReadCost:       readCost,
+		PromptCacheCreationTokens:                row.PromptCacheCreationTokens,
+		PromptCacheReadTokens:                    row.PromptCacheReadTokens,
+		PromptCacheCreationCost:                  createCost,
+		PromptCacheReadCost:                      readCost,
 		ResponseCacheHits:                        row.ResponseCacheHits,
 		ResponseCacheCost:                        hitCost,
 		ResponseCacheReplayedInputTokens:         row.ResponseCacheReplayedInputTokens,

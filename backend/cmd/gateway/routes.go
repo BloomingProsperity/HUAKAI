@@ -73,6 +73,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/passkeyhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/paymenthttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/platformsettings"
+	"github.com/BloomingProsperity/HUAKAI/internal/poolhealthhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/pricingcatalog"
 	"github.com/BloomingProsperity/HUAKAI/internal/pricingpublichttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/provideraccountrecovery"
@@ -1133,6 +1134,12 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 		})
 	})
 	r.Route("/admin/v1/pools", func(r chi.Router) {
+		// 按池健康投影是租户作用域只读聚合,静态路径先于池 CRUD 子路由注册,避免被 /{id} 吞掉。
+		poolHealthDeps := poolhealthhttp.Deps{Auth: d.adminAuth, Store: d.adminQueries}
+		if d.authCooldown != nil {
+			poolHealthDeps.AuthCooldown = d.authCooldown
+		}
+		r.Get("/health-summary", poolhealthhttp.NewHandler(poolHealthDeps))
 		r.Mount("/", adminpoolhttp.NewAdminPoolsHandler(adminpoolhttp.AdminPoolsDeps{
 			Auth:  d.adminAuth,
 			Store: adminpoolhttp.NewAdminPoolsStoreAdapter(d.billingQueries, d.adminQueries, d.pgPool),
