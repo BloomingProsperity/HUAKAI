@@ -8,8 +8,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/workerpulse"
 )
 
 type fakeWorkerStatsReader struct {
@@ -52,8 +54,10 @@ func TestAdminWorkerStatsRejectsUnauthenticated(t *testing.T) {
 
 func TestAdminWorkerStatsReturnsCountersForPlatformAdmin(t *testing.T) {
 	h := NewAdminWorkerStatsHandler(AdminWorkerStatsDeps{
-		Auth:   fakeAdminAuth{ident: admin.AdminIdentity{Role: admin.RolePlatformAdmin}},
-		Reader: fakeWorkerStatsReader{stats: sampleWorkerStats()},
+		Auth:      fakeAdminAuth{ident: admin.AdminIdentity{Role: admin.RolePlatformAdmin}},
+		Reader:    fakeWorkerStatsReader{stats: sampleWorkerStats()},
+		Pulses:    workerpulse.NewMemoryStore(),
+		ReplicaID: "node-b",
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/worker-stats", nil)
@@ -78,8 +82,70 @@ func TestAdminWorkerStatsReturnsCountersForPlatformAdmin(t *testing.T) {
 		t.Fatalf("worker stats = %+v, want %+v", got, want)
 	}
 	// B10: 自动续费 money 计数进响应 (此前无读者)。
-	if got.AutoRenew != want.AutoRenew {
+	if got.AutoRenew.Enabled != want.AutoRenew.Enabled ||
+		got.AutoRenew.TickCount != want.AutoRenew.TickCount ||
+		got.AutoRenew.RenewedTotal != want.AutoRenew.RenewedTotal ||
+		got.AutoRenew.SkippedTotal != want.AutoRenew.SkippedTotal ||
+		got.AutoRenew.FailedTicks != want.AutoRenew.FailedTicks {
 		t.Fatalf("auto_renew stats = %+v, want %+v (续费 money 指标未暴露)", got.AutoRenew, want.AutoRenew)
+	}
+	if got.AnsweringReplica != "node-b" {
+		t.Fatalf("answering_replica=%q", got.AnsweringReplica)
+	}
+	if got.Reminder.Cluster.Running {
+		t.Fatalf("empty pulse store must not look running: %+v", got.Reminder.Cluster)
+	}
+}
+
+func TestAdminWorkerStatsShowsRemoteExecutorNotAnsweringReplica(t *testing.T) {
+	store := workerpulse.NewMemoryStore()
+	now := time.Now().UTC()
+	if err := store.Record(context.Background(), workerpulse.Record{
+		JobKey: workerpulse.JobSubscriptionExpiry, ReplicaID: "node-a",
+		SeenAt: now, SuccessAt: now, Executor: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Record(context.Background(), workerpulse.Record{
+		JobKey: workerpulse.JobSubscriptionExpiry, ReplicaID: "node-b",
+		SeenAt: now, Executor: false,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h := NewAdminWorkerStatsHandler(AdminWorkerStatsDeps{
+		Auth:      fakeAdminAuth{ident: admin.AdminIdentity{Role: admin.RolePlatformAdmin}},
+		Reader:    fakeWorkerStatsReader{stats: sampleWorkerStats()},
+		Pulses:    store,
+		ReplicaID: "node-b",
+	})
+	req := httptest.NewRequest(http.MethodGet, "/worker-stats", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var got WorkerStats
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.AnsweringReplica != "node-b" || got.Expiry.Cluster.ExecutorReplica != "node-a" || !got.Expiry.Cluster.Running {
+		t.Fatalf("answering=%q expiry cluster=%+v", got.AnsweringReplica, got.Expiry.Cluster)
+	}
+	if got.Expiry.TickCount != 13 {
+		t.Fatalf("process counters must stay answering-local: %d", got.Expiry.TickCount)
+	}
+}
+
+func TestAdminWorkerStatsNilPulsesFailsClosed(t *testing.T) {
+	h := NewAdminWorkerStatsHandler(AdminWorkerStatsDeps{
+		Auth:   fakeAdminAuth{ident: admin.AdminIdentity{Role: admin.RolePlatformAdmin}},
+		Reader: fakeWorkerStatsReader{stats: sampleWorkerStats()},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/worker-stats", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503; body=%s", rec.Code, rec.Body.String())
 	}
 }
 

@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/workerpulse"
 )
 
 func TestSchedulerRunsStartupAndPeriodicSyncUntilStop(t *testing.T) {
@@ -97,6 +99,37 @@ func TestSchedulerSkipsSyncWhenAnotherReplicaHoldsLease(t *testing.T) {
 	}
 	if got := lease.releaseCalls(); got != 0 {
 		t.Fatalf("unacquired lease released %d time(s)", got)
+	}
+}
+
+func TestSchedulerRecordsFollowerPulseWithoutSync(t *testing.T) {
+	svc := &schedulerSyncStub{}
+	store := workerpulse.NewMemoryStore()
+	lease := &schedulerLeaseStub{acquired: false}
+	scheduler := NewScheduler(svc, SchedulerConfig{
+		Interval:    time.Hour,
+		RunOnStart:  true,
+		LeaderLease: lease,
+		Pulse:       store,
+		ReplicaID:   "node-b",
+	})
+	stop := scheduler.Start(context.Background())
+	waitForLeaseCalls(t, lease, 1)
+	deadline := time.Now().Add(250 * time.Millisecond)
+	var rows []workerpulse.Pulse
+	for time.Now().Before(deadline) {
+		rows, _ = store.List(context.Background(), workerpulse.JobModelSync)
+		if len(rows) == 1 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	stop()
+	if svc.calls() != 0 {
+		t.Fatalf("follower ran sync %d", svc.calls())
+	}
+	if len(rows) != 1 || rows[0].Executor || rows[0].ReplicaID != "node-b" {
+		t.Fatalf("follower pulse=%+v", rows)
 	}
 }
 

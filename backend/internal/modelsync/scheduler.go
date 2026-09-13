@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/workerpulse"
 )
 
 type Syncer interface {
@@ -21,6 +23,8 @@ type SchedulerConfig struct {
 	Interval    time.Duration
 	RunOnStart  bool
 	LeaderLease LeaderLease
+	Pulse       workerpulse.Recorder
+	ReplicaID   string
 }
 
 type SchedulerStatus struct {
@@ -33,6 +37,8 @@ type Scheduler struct {
 	service     Syncer
 	cfg         SchedulerConfig
 	leaderLease LeaderLease
+	pulse       workerpulse.Recorder
+	replicaID   string
 
 	statusMu sync.Mutex
 	status   SchedulerStatus
@@ -46,7 +52,11 @@ func NewScheduler(service Syncer, cfg SchedulerConfig) *Scheduler {
 	if cfg.Interval <= 0 {
 		cfg.Interval = 3 * time.Hour
 	}
-	return &Scheduler{service: service, cfg: cfg, leaderLease: cfg.LeaderLease}
+	replicaID := cfg.ReplicaID
+	if replicaID == "" {
+		replicaID = workerpulse.ReplicaID()
+	}
+	return &Scheduler{service: service, cfg: cfg, leaderLease: cfg.LeaderLease, pulse: cfg.Pulse, replicaID: replicaID}
 }
 
 func (s *Scheduler) Start(ctx context.Context) func() {
@@ -112,9 +122,11 @@ func (s *Scheduler) runSync(ctx context.Context, reason string) {
 				"reason", reason,
 				"error", err.Error())
 			s.recordStatus(err)
+			s.recordPulse(ctx, false, err)
 			return
 		}
 		if !acquired {
+			s.recordPulse(ctx, false, nil)
 			return
 		}
 		if release == nil {
@@ -124,6 +136,7 @@ func (s *Scheduler) runSync(ctx context.Context, reason string) {
 				"reason", reason,
 				"error", err.Error())
 			s.recordStatus(err)
+			s.recordPulse(ctx, false, err)
 			return
 		}
 		defer release()
@@ -136,6 +149,30 @@ func (s *Scheduler) runSync(ctx context.Context, reason string) {
 			"error", err.Error())
 	}
 	s.recordStatus(err)
+	s.recordPulse(ctx, true, err)
+}
+
+func (s *Scheduler) recordPulse(ctx context.Context, executor bool, workErr error) {
+	if s.pulse == nil {
+		return
+	}
+	now := time.Now().UTC()
+	rec := workerpulse.Record{
+		JobKey:    workerpulse.JobModelSync,
+		ReplicaID: s.replicaID,
+		SeenAt:    now,
+		Executor:  executor,
+	}
+	if workErr != nil {
+		rec.LastError = workErr.Error()
+	} else if executor {
+		rec.SuccessAt = now
+	}
+	if err := s.pulse.Record(ctx, rec); err != nil {
+		slog.WarnContext(ctx, "model catalog sync pulse failed",
+			"component", "model_sync_scheduler",
+			"error", err.Error())
+	}
 }
 
 func (s *Scheduler) recordStatus(err error) {

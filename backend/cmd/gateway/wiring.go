@@ -132,6 +132,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/voucher"
 	"github.com/BloomingProsperity/HUAKAI/internal/windowcost"
 	"github.com/BloomingProsperity/HUAKAI/internal/workerlease"
+	"github.com/BloomingProsperity/HUAKAI/internal/workerpulse"
 	sqlmigrations "github.com/BloomingProsperity/HUAKAI/sql"
 )
 
@@ -144,6 +145,9 @@ const (
 	opsInspectionLeaderLockKey    int64 = 0x48554B4845524D49
 	stagedCleanupLeaderLockKey    int64 = 0x48554B535447434C
 	autoListingLeaderLockKey      int64 = 0x48554B4155544F4C
+	subscriptionExpiryLockKey     int64 = 0x48554B4558505259
+	subscriptionReminderLockKey   int64 = 0x48554B52454D4E44
+	subscriptionAutoRenewLockKey  int64 = 0x48554B4155524E57
 	autoListingWorkerInterval           = 3 * time.Hour
 )
 
@@ -245,6 +249,7 @@ type deps struct {
 	modelRegistry             *registry.PostgresRegistry
 	modelSync                 *modelsync.Service
 	modelSyncScheduler        *modelsync.Scheduler
+	workerPulse               *workerpulse.Store
 	routePlanner              *router.DefaultRouter
 	adminAuth                 *adminsessionauth.Resolver
 	adminIssuer               *admin.KeyIssuer
@@ -1610,6 +1615,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, logger *zap.Logger, s
 		paymentRefundRequests: buildPaymentRefundRequestRecorder(pgPool, paymentService),
 		voucherService:        voucher.NewService(voucher.NewPostgresStore(pgPool), buildVoucherServiceOptions(cfg)...),
 		subscriptionService:   subscription.NewService(subscription.NewPostgresStore(pgPool)),
+		workerPulse:           workerpulse.NewStore(pgPool),
 		notificationSettings:  notificationSettings,
 		announcementService:   announcementService,
 		userNoticeService:     userNoticeService,
@@ -1860,6 +1866,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, logger *zap.Logger, s
 			Interval:    opts.modelSync.Interval,
 			RunOnStart:  true,
 			LeaderLease: workerlease.NewPostgres(pgPool, modelSyncLeaderLockKey, "model_sync"),
+			Pulse:       d.workerPulse,
 		})
 		d.modelSyncScheduler = scheduler
 		rt.modelSyncStop = scheduler.Start(workerCtx)
@@ -1880,7 +1887,11 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, logger *zap.Logger, s
 	)
 	rt.autoListingStop = autoListingWorker.Start(workerCtx)
 
-	subscriptionExpiryWorker := subscription.NewExpiryWorker(subscription.ExpiryWorkerConfig{Service: d.subscriptionService})
+	subscriptionExpiryWorker := subscription.NewExpiryWorker(subscription.ExpiryWorkerConfig{
+		Service:     d.subscriptionService,
+		LeaderLease: workerlease.NewPostgres(pgPool, subscriptionExpiryLockKey, "subscription_expiry"),
+		Pulse:       d.workerPulse,
+	})
 	subscriptionExpiryWorker.Start(workerCtx)
 
 	subscriptionReminderWorker := subscription.NewReminderWorker(subscription.ReminderWorkerConfig{
@@ -1888,6 +1899,8 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, logger *zap.Logger, s
 			subscription.NewPostgresStore(pgPool),
 			subscription.NewEmailReminderMailer(notificationEmailSender),
 		),
+		LeaderLease: workerlease.NewPostgres(pgPool, subscriptionReminderLockKey, "subscription_reminder"),
+		Pulse:       d.workerPulse,
 	})
 	subscriptionReminderWorker.Start(workerCtx)
 	d.subExpiryWorker = subscriptionExpiryWorker
@@ -1901,7 +1914,11 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, logger *zap.Logger, s
 	}
 	var subscriptionAutoRenewWorker *subscription.AutoRenewWorker
 	if autoRenewEnabled {
-		subscriptionAutoRenewWorker = subscription.NewAutoRenewWorker(subscription.AutoRenewWorkerConfig{Service: d.subscriptionService})
+		subscriptionAutoRenewWorker = subscription.NewAutoRenewWorker(subscription.AutoRenewWorkerConfig{
+			Service:     d.subscriptionService,
+			LeaderLease: workerlease.NewPostgres(pgPool, subscriptionAutoRenewLockKey, "subscription_auto_renew"),
+			Pulse:       d.workerPulse,
+		})
 		subscriptionAutoRenewWorker.Start(workerCtx)
 		if logger != nil {
 			logger.Info("订阅自动续费 worker 已启用 (将自动扣减钱包余额续期到期订阅)",
