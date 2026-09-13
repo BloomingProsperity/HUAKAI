@@ -118,14 +118,6 @@ func newModelSyncStatusHandler(d AdminModelSyncDeps) http.HandlerFunc {
 	}
 }
 
-func formatModelSyncStatusTime(value time.Time) *string {
-	if value.IsZero() {
-		return nil
-	}
-	formatted := value.UTC().Format(time.RFC3339)
-	return &formatted
-}
-
 func newModelSyncHandler(d AdminModelSyncDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if d.Auth == nil || d.Service == nil {
