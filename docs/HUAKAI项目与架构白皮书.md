@@ -1,7 +1,7 @@
 # HUAKAI 项目与架构白皮书
 
 > 文档状态：现行主线总纲
-> 事实基线：`origin/main@1d067efa051656034d87846866db4f0bd3875029`
+> 事实基线：`origin/main@cb93652b5a71b4816cd1bb9fcf488e1de5badcee`
 > 核实日期：2026-09-13
 > 语言：中文；代码标识符、协议名和环境变量保留英文
 > 当前权威性：只描述已合入主线的能力；未合并分支不得写入“当前已实现”
@@ -12,12 +12,12 @@ HUAKAI 已经是一个大型后端项目。当前主线包含：
 
 | 资产 | 本提交实数 | 统计口径 |
 | --- | ---: | --- |
-| Go 包 | 357 | `backend` 模块内 `go list ./...` |
-| Go 生产文件 | 1444 | 与 `docs/源码责任索引.md` 当前统计一致；排除 `_test.go` |
+| Go 包 | 358 | `backend` 模块内 `go list ./...` |
+| Go 生产文件 | 1449 | 与 `docs/源码责任索引.md` 当前统计一致；排除 `_test.go` |
 | 第一方 Rust 工作区源码 | 61 | 排除 `tests/` 与 `target/`；其中 9 个 Sidecar 文件进入生产镜像，其余不进入当前镜像 |
-| PostgreSQL 迁移文件 | 466 | `backend/sql/migrations/*.sql` |
+| PostgreSQL 迁移文件 | 468 | `backend/sql/migrations/*.sql` |
 | SQL 查询源 | 64 | 非迁移 SQL，作为 sqlc 或运行查询合同 |
-| PostgreSQL 业务表 | 149 | 从当前迁移最终态解析 |
+| PostgreSQL 业务表 | 150 | 从当前迁移最终态解析 |
 | 工程工具与部署资产 | 61 | 源码责任索引纳入的 Docker、Compose、CI、Hook、Python、Shell 与独立 Go 工具 |
 
 过去的问题不是“完全没有文档”，而是项目级 Brief、架构说明、阶段计划、功能树、
@@ -943,7 +943,7 @@ flowchart TB
 
 ## 10. 核心数据域
 
-149 张业务表按责任归入以下数据域：
+150 张业务表按责任归入以下数据域：
 
 | 数据域 | 核心事实示例 | 目的 |
 | --- | --- | --- |
@@ -956,7 +956,7 @@ flowchart TB
 | 配额与订阅 | `quota_*`、`subscription_*` | 时间窗、并发、套餐、续期和提醒 |
 | 健康与监测 | `channel_health_*`、`server_monitor_*`、`alert_*` | 账号和服务器状态、告警和恢复 |
 | 日志与证据 | `ops_runtime_logs`、`audit_ledger_entries`、各域 audit 表 | 操作、资金、安全、错误、访问和恢复证据 |
-| 可靠性 | `outbox_events`、`dlq_events`、`settlement_intents` | 异步投递、失败重放和补账 |
+| 可靠性 | `outbox_events`、`dlq_events`、`settlement_intents`、`worker_job_pulses` | 异步投递、失败重放、补账和后台作业按副本心跳 |
 | Hermes | `hermes_*` | profile、会话、工具调用、确认和修改恢复 |
 
 PostgreSQL 是业务和恢复事实的唯一持久真相。内存缓存、Redis、进程内计数器和 runtime registry
@@ -1032,6 +1032,7 @@ Hermes 消息清理、用量清理、日志清理、DLQ 和 outbox 等 worker。
 4. 钱和权限相关任务失败不能只写日志，必须进入可恢复事实。
 5. 普通日志、Hermes 消息和同类运维数据统一按 30 天清理。
 6. 清理任务必须分批，不能长事务锁死生产表。
+7. 运营只读状态必须能区分“没在跑 / 在跑但我不是执行者 / 在跑且这就是执行者”；应答副本的内存计数不得冒充全集群。
 
 ## 12. 状态口径
 
@@ -1073,6 +1074,7 @@ Hermes 消息清理、用量清理、日志清理、DLQ 和 outbox 等 worker。
 - auth 降级车道以 `provider_account_auth_cooldowns` 表为跨副本唯一真相并默认开启（`HUAKAI_AUTH_COOLDOWN_ENABLED=false` 为逃生阀）：请求时鉴权失败按封顶指数退避临时移出选号，铁证类达阈值或凭据刷新拿到永久失效即硬禁；选号候选查询直读真相表（任一副本写入下一次候选查询即可见），进程镜像只承担本地即时性与写库失败时的兜底，每 5 秒重载并补写本地硬禁；硬禁只增不减，成功请求只清软退避，硬禁只由运营 resume（留下 `resumed_at` 墓碑，早于墓碑的本地硬禁补写被拒）或显式凭据轮换（同事务清行，旧凭据版本的结论不禁新凭据）解除；账号诊断给出 `persistence / failure_class / last_escalated_at / hard_disabled_at`，仅本副本持有的兜底状态另带 `replica_id`。已知限制：他副本刚写入软退避与本副本同时成功的竞态保留到软退避过期；墓碑比较依赖副本 NTP 同步；写库失败后崩溃的本地兜底丢失为有界自愈；逃生阀关闭后不再写入与 resume 清理，但候选查询仍排除存量硬禁与未过期软退避行，放行需凭据轮换或重新开启后 resume。
 - 按请求 ID 的调用链路时间线投影：`GET /admin/v1/requests/{request_id}/trace`（部署者 / 租户管理员，复用 `adminhttpcore.ResolveTenantScopeLookup`：租户管理员锁本租户、部署者可省略 `tenant_id` 跨租户点查）与 `GET /v1/me/requests/{request_id}/trace`（最终用户会话）。HUAKAI 有两把请求标识——账本 claim 的逻辑标识（客户端幂等键或网关生成）与响应头 / 收据 / 审计使用的网关 HTTP 请求标识（记录在 `billing_events.audit_request_id`）——任一可查并同时回传；服务端按同一请求把 claim 头部、已结算尝试（含拿到账号后中止写入的零费用行）、账本事件、四类账号级审计事件、信任链收据与用户费用收据拼成有序时间线。读投影三档脱敏：最终用户只看模型、池名、状态、结果档、九类失败粗分类、用量与费用、账本事件与收据摘要；租户管理员另见账号代号、渠道、厂商、上游模型、中止分类码、只含排除计数的选号摘要、账号级审计与模型链；部署者另见租户/用户/Key 数字标识、逐账号排除、跳点链与路由审计全文；任何角色都不见凭据、上游地址与请求正文。用户与租户管理员对无权 / 不存在 / 明细过期且无账本返回字节相同的 404；非法标识 400 不触库；真相不可用 503。`coverage` 给出结构化降级标记（`attempts_detail`、`detail_retention` 含结算后 10 分钟宽限窗内的 `pending`、`unknown_account_attempts`，`notes` 含 `multiple_claims_for_id` 等），任一事实表缺行不失败。迁移 0239 为逻辑标识、HTTP 标识与四类审计请求标识加点查索引。已知限制：拿到账号前中止的尝试只有账本事件、账号未知；在途（尚未产生账本事件）的请求只能按逻辑标识命中且看不到审计半边，按 HTTP 标识查询在首个账本事件落库前返回 404；`expired` 主要来自用量落盘进死信，不产生用量行的提交路径（如媒体任务孤儿追扣）也会显示 `expired`，`usage_records` 的保留清理与 append-only 触发器冲突待 Owner 决策（Issue #372）；路由审计来源为预留、当前无生产写入者。
 - 内容审核用户文本闸：聊天族与兄弟协议（Completions、Embeddings、Rerank、Images、Audio、Video、count_tokens、媒体任务提交）在预扣费或 `CreateTask` 之前扫描用户可控文本；Images 编辑/变体从已解析字段重建审核体，避免官方 multipart 被当成抽取失败。已登记无文本放行，未知协议按租户失败策略关闭（默认关闭）。命中稳定 403 `content_policy_violation`。Suno `tags` 纳入抽取。二进制多模态模型级审核仍是强制路线。管理闭环 `/admin/v1/moderation/*` 已挂载，前端待接线。
+- 模型同步与订阅 Worker 集群口径：`GET /admin/v1/model-sync` 与 `GET /v1/admin/notifications/worker-stats`（两入口均仅部署者）读 `worker_job_pulses`（迁移 0241，作业名+副本主键）。`answering_replica` 只标识应答本请求的副本；`cluster.running` 仅在存在未过期执行者时为真；`last_run_at` / `last_tick_at` 取执行者最后可见时刻，跟随者心跳不能把作业写成在跑。心跳面不可用返回 503，不得用本副本内存或进程计数冒充全集群。订阅提醒、到期与自动续费在生产接线持有 PostgreSQL 会话租约，未持有或租约存储失败本拍不跑副作用。副本标识优先 `HUAKAI_REPLICA_ID`，否则主机名+pid。`tick_count` 等计数仍是应答副本进程内累计。前端待接线。已知限制：未注入租约的路径仍全开；心跳写入失败只记日志，读路径仍以库为准；其它后台作业尚未进入同一心跳面。
 - 按选中账号 ID 的批量运维：`POST /admin/v1/provider-accounts/bulk`（部署者 / 租户管理员，复用 `adminhttpcore.ResolveTenantScopeQuery`：部署者必须显式 `tenant_id`，租户管理员锁本租户）。按请求体 `ids` 对未删除账号执行 `set_enabled` / `set_priority` / `set_static_weight` / `clear_rate_limit` / `recover` / `refresh_credential` / `move_channel`；去重后上限 200（刷新 50）；字段与改渠道逐项独立短事务，刷新走有界工人池；部分成功 207，dry-run 不写。他租户 / 不存在 / 已删除一律 `not_found`。立刻刷新与后台 `admitAndRefresh` 共用准入链，静态凭据只读模式检查后 `refresh_not_applicable`。改渠道校验目标同租户并做混合风险确认。清限流 / 完整恢复复用既有恢复店面，部分恢复可重试。禁用 / 清限流 / 恢复必填非空原因。批次管理日志；字段、改渠道与恢复另有逐项管理日志，刷新逐项走凭据刷新审计；迁移 0240 以 0233 白名单为底追加批次动作。按标签批量入口仍只改 enabled / priority / static_weight，不能替代本入口。已知限制：恢复 / 刷新 dry-run 不预判将拒；批次日志失败当前静默；前端待接线。
 
 ### 13.2 不能由源码单独证明
@@ -1098,7 +1100,7 @@ Hermes 消息清理、用量清理、日志清理、DLQ 和 outbox 等 worker。
 
 ## 14. 源码责任地图的维护合同
 
-白皮书负责稳定产品能力、架构边界和承重构件，不把 1444 个 Go 生产文件逐个复制进正文。
+白皮书负责稳定产品能力、架构边界和承重构件，不把 1449 个 Go 生产文件逐个复制进正文。
 机制、算法、状态机、事务和失败恢复由 `docs/HUAKAI工程设计手册.md` 展开；全量文件覆盖由
 派生文档 `docs/源码责任索引.md` 承担。两者都必须由当前主线生产源码提取和人工复核，
 不是另一份产品总纲。三者的关系是：
@@ -1491,7 +1493,7 @@ Issue/PR 保存历史证据，白皮书只保留当前选择，不再在主线�
 | `internal/payment` | 5759 行 / 20 个生产文件 | 接近预算上限 | 订单、回调、退款和奖励容易共享过多存储细节 |
 | `internal/gateway` | 5717 行 / 20 个生产文件 | 接近预算上限 | 转发、重试、错误和流恢复继续耦合 |
 
-包总数不是首要问题。357 个 Go 包中，大量是按 HTTP、领域、Provider、协议和 sqlc 查询边界
+包总数不是首要问题。358 个 Go 包中，大量是按 HTTP、领域、Provider、协议和 sqlc 查询边界
 拆出的内聚包；只要依赖方向清楚，小包有利于限制影响半径。当前真正的集中风险是组合根：
 `cmd/gateway` 直接依赖 255 个包，完整依赖闭包为 741 个包，`wiring.go` 单文件 2220 行，
 `routes.go` 单文件 1223 行。任何新增模块都必须同时修改这些高冲突入口，容易出现“代码存在但
