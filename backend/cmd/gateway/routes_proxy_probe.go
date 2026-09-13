@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/proxyadmin"
 	"github.com/BloomingProsperity/HUAKAI/internal/proxyadminhttp"
@@ -62,6 +63,43 @@ func buildProxyProber(d *deps) proxyadminhttp.Prober {
 		policy = ssrfpolicy.Policy{}
 	}
 	return &gatewayProxyProber{
+		svc:    proxyadmin.New(d.adminQueries, d.credentialKeys),
+		policy: policy,
+		canary: proxyhealth.DefaultProbeCanary,
+	}
+}
+
+type gatewayHealthProber struct {
+	svc    *proxyadmin.Service
+	policy ssrfpolicy.Policy
+	canary string
+}
+
+func (p *gatewayHealthProber) Probe(ctx context.Context, t proxyhealth.ProxyTarget) proxyhealth.Observation {
+	if p == nil || p.svc == nil {
+		return proxyhealth.Observation{ErrorClass: proxyhealth.ErrClassBadProxyURL}
+	}
+	dialURL, err := p.svc.DialTarget(ctx, t.TenantID, t.ID)
+	if errors.Is(err, proxyadmin.ErrUnsafeHost) {
+		return proxyhealth.Observation{ErrorClass: proxyhealth.ErrClassUnsafeProxyHost}
+	}
+	if err != nil {
+		return proxyhealth.Observation{ErrorClass: proxyhealth.ErrClassBadProxyURL}
+	}
+	res := proxyhealth.ProbeThrough(ctx, p.policy, dialURL, p.canary)
+	return proxyhealth.Observation{Reachable: res.OK, LatencyMS: res.LatencyMS, ErrorClass: res.ErrorClass}
+}
+
+func buildProxyHealthProber(d *deps) proxyhealth.Prober {
+	if d == nil || d.adminQueries == nil || d.credentialKeys == nil {
+		return proxyhealth.NewTCPProber(5 * time.Second)
+	}
+	policy, err := ssrfpolicy.LoadFromEnv()
+	if err != nil {
+		slog.Warn("proxy health: ssrfpolicy.LoadFromEnv 失败,退回零值策略", "err", err)
+		policy = ssrfpolicy.Policy{}
+	}
+	return &gatewayHealthProber{
 		svc:    proxyadmin.New(d.adminQueries, d.credentialKeys),
 		policy: policy,
 		canary: proxyhealth.DefaultProbeCanary,

@@ -15927,8 +15927,10 @@ paths:
       operationId: listAdminProxies
       description: |
         Returns the tenant's outbound proxy pool for the operations console. The
-        response is secret-free: each proxy exposes its endpoint and lifecycle
-        status but never the stored credential (auth_secret is write-only).
+        response is secret-free: each proxy exposes its endpoint, lifecycle
+        status and persisted quality snapshot but never the stored credential
+        (auth_secret is write-only). Stale snapshots keep stored grade but
+        effective_grade is unknown.
         platform_admin callers must pass tenant_id; tenant_operator callers may
         omit it and are scoped to their admin token tenant.
       x-huakai-required-role: tenant_operator
@@ -16149,14 +16151,16 @@ paths:
       operationId: testAdminProxy
       description: |
         经该 stored 代理建隧道到一个**服务端固定 canary 目标**(api.anthropic.com:443)做一次
-        TLS 握手,测真实出站连通性 + 延迟,区别于被动 TCP 存活探测。探测目标是服务端常量,
-        请求体不参与目标决策(杜绝双跳 SSRF)。响应**绝不含**代理 URL/凭据/原始错误,只回
-        {ok, latency_ms, error_class, probed_at}。代理 host 指向内网/metadata 时返回
-        ok=false + error_class=unsafe_proxy_host。不写库,只返即时结果。
+        TLS 握手,测真实出站连通性 + 延迟,并回写权威质量快照。探测目标是服务端常量,
+        请求体不参与目标决策(杜绝双跳 SSRF)。响应**绝不含**代理 URL/凭据/原始错误。
+        代理 host 指向内网/metadata 时返回 ok=false + error_class=unsafe_proxy_host。
+        质量面未配置或快照写入失败返回 503,不得只把内存结果当成已落库。
       x-huakai-spec-source:
         - backend/internal/proxyadminhttp/probe_handler.go
         - backend/internal/proxyhealth/probe_through.go
         - backend/internal/proxyadmin/dial_target.go
+        - backend/internal/proxyadmin/service.go
+        - backend/internal/proxyquality/grade.go
       x-huakai-required-role: tenant_operator
       parameters:
         - in: path
@@ -16175,14 +16179,18 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [object, ok, latency_ms, probed_at]
+                required: [object, ok, latency_ms, grade, source, fresh, effective_grade, probed_at]
                 properties:
                   object: { type: string }
                   ok: { type: boolean }
                   latency_ms: { type: integer, format: int64 }
                   error_class:
                     type: string
-                    enum: [unsafe_proxy_host, target_denied, bad_proxy_url, dial_timeout, tunnel_refused, tls_fail]
+                    enum: [unsafe_proxy_host, target_denied, bad_proxy_url, dial_timeout, tunnel_refused, tls_fail, tcp_unreachable]
+                  grade: { type: string, enum: [excellent, good, degraded, poor] }
+                  source: { type: string, enum: [manual, periodic] }
+                  fresh: { type: boolean }
+                  effective_grade: { type: string, enum: [excellent, good, degraded, poor, unknown] }
                   probed_at: { type: string, format: date-time }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
@@ -21652,8 +21660,27 @@ components:
           description: "代理组标识；仅允许 ASCII 字母、数字、下划线和短横线，null 表示未分组。"
         status: { type: string, enum: [active, disabled, dead] }
         last_check_at: { type: string, format: date-time, nullable: true }
+        quality:
+          $ref: '#/components/schemas/ProxyQuality'
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
+
+    ProxyQuality:
+      type: object
+      additionalProperties: false
+      nullable: true
+      required: [probed_at, ok, latency_ms, grade, source, fresh, effective_grade]
+      properties:
+        probed_at: { type: string, format: date-time }
+        ok: { type: boolean }
+        latency_ms: { type: integer, format: int64 }
+        error_class: { type: string }
+        grade: { type: string, enum: [excellent, good, degraded, poor] }
+        source: { type: string, enum: [manual, periodic] }
+        success_at: { type: string, format: date-time }
+        success_latency_ms: { type: integer, format: int64 }
+        fresh: { type: boolean, description: "false 表示存档已过新鲜窗，effective_grade 为 unknown。" }
+        effective_grade: { type: string, enum: [excellent, good, degraded, poor, unknown] }
 
     AdminProxyList:
       type: object

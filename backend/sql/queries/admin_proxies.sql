@@ -7,28 +7,22 @@
 SELECT
     id, tenant_id, name, protocol, host, port,
     auth_username, auth_secret, group_id,
-    status, last_check_at, created_at, updated_at
+    status, last_check_at,
+    quality_probed_at, quality_ok, quality_latency_ms, quality_error_class,
+    quality_grade, quality_source, quality_success_at, quality_success_latency_ms,
+    created_at, updated_at
 FROM proxies
 WHERE tenant_id = sqlc.arg(tenant_id) AND deleted_at IS NULL
-ORDER BY id;
-
--- name: ListActiveProxiesByTenant :many
--- Phase 3 health check worker 用 (选 active 但 last_check_at 老的 ping)。
-SELECT
-    id, tenant_id, name, protocol, host, port,
-    auth_username, auth_secret,
-    status, last_check_at, created_at, updated_at
-FROM proxies
-WHERE tenant_id = sqlc.arg(tenant_id)
-  AND deleted_at IS NULL
-  AND status = 'active'
 ORDER BY id;
 
 -- name: GetProxy :one
 SELECT
     id, tenant_id, name, protocol, host, port,
     auth_username, auth_secret, group_id,
-    status, last_check_at, created_at, updated_at
+    status, last_check_at,
+    quality_probed_at, quality_ok, quality_latency_ms, quality_error_class,
+    quality_grade, quality_source, quality_success_at, quality_success_latency_ms,
+    created_at, updated_at
 FROM proxies
 WHERE tenant_id = sqlc.arg(tenant_id)
   AND id = sqlc.arg(id)
@@ -47,7 +41,10 @@ INSERT INTO proxies (
 RETURNING
     id, tenant_id, name, protocol, host, port,
     auth_username, auth_secret, group_id,
-    status, last_check_at, created_at, updated_at;
+    status, last_check_at,
+    quality_probed_at, quality_ok, quality_latency_ms, quality_error_class,
+    quality_grade, quality_source, quality_success_at, quality_success_latency_ms,
+    created_at, updated_at;
 
 -- name: UpdateProxy :one
 UPDATE proxies
@@ -66,7 +63,10 @@ WHERE tenant_id = sqlc.arg(tenant_id)
 RETURNING
     id, tenant_id, name, protocol, host, port,
     auth_username, auth_secret, group_id,
-    status, last_check_at, created_at, updated_at;
+    status, last_check_at,
+    quality_probed_at, quality_ok, quality_latency_ms, quality_error_class,
+    quality_grade, quality_source, quality_success_at, quality_success_latency_ms,
+    created_at, updated_at;
 
 -- name: SetProxyStatus :execrows
 -- Phase 3 health check worker 标 dead/active, admin 手动 disable 走这。

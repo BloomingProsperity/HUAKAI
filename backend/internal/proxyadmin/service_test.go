@@ -9,6 +9,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/proxyquality"
 	"github.com/BloomingProsperity/HUAKAI/internal/proxysecret"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -308,6 +309,19 @@ func (m *mockProxyQuerier) ListProxiesByTenant(_ context.Context, tenantID int64
 	return m.listRows, nil
 }
 
+func (m *mockProxyQuerier) RecordProxyQuality(_ context.Context, arg admindb.RecordProxyQualityParams) (admindb.RecordProxyQualityRow, error) {
+	if arg.QualityOk == nil || arg.QualityGrade == nil || arg.QualitySource == nil {
+		return admindb.RecordProxyQualityRow{}, errors.New("quality write missing required fields")
+	}
+	return admindb.RecordProxyQualityRow{
+		ID: arg.ID, TenantID: arg.TenantID, Status: "active",
+		QualityProbedAt: pgts(time.Now().UTC()),
+		QualityOk: arg.QualityOk, QualityLatencyMs: arg.QualityLatencyMs,
+		QualityErrorClass: arg.QualityErrorClass, QualityGrade: arg.QualityGrade,
+		QualitySource: arg.QualitySource,
+	}, nil
+}
+
 func (m *mockProxyQuerier) SetProxyStatus(_ context.Context, arg admindb.SetProxyStatusParams) (int64, error) {
 	m.setStatusCalls++
 	m.setStatusArg = arg
@@ -384,6 +398,9 @@ func TestListProjectsNonSecretFieldsTenantScoped(t *testing.T) {
 	}
 	if got.LastCheckAt == nil || !got.LastCheckAt.Equal(checked) {
 		t.Fatalf("List must project last_check_at; got %v", got.LastCheckAt)
+	}
+	if got.Quality.HasSnapshot {
+		t.Fatal("无探测列时不得伪造质量快照")
 	}
 	// 结构层面的不含凭据证明:该行携带了密文,但它唯一可能泄露的途径是结构体字段——
 	// 而 Proxy 一个都没有。我们通过穷尽断言每个被填充的字段都源自非凭据列,
@@ -563,6 +580,40 @@ func TestReadPathRejectsBadScope(t *testing.T) {
 	}
 	if q.listCalls != 0 || q.getCalls != 0 || q.deleteCalls != 0 {
 		t.Fatalf("bad-scope inputs must not touch the querier; %+v", q)
+	}
+}
+
+func TestProjectQualityExpiresStoredExcellent(t *testing.T) {
+	stale := time.Now().UTC().Add(-proxyquality.Freshness - time.Minute)
+	grade := proxyquality.GradeExcellent
+	source := proxyquality.SourceManual
+	ok := true
+	latency := int64(80)
+	q := projectQuality(
+		pgts(stale), &ok, &latency, "",
+		&grade, &source, pgts(stale), &latency,
+	)
+	if !q.HasSnapshot {
+		t.Fatal("过期快照仍应存在，只是不能当新鲜优质")
+	}
+	if q.Fresh || q.EffectiveGrade != proxyquality.GradeUnknown || q.Grade != proxyquality.GradeExcellent {
+		t.Fatalf("过期优质必须展示未知: %+v", q)
+	}
+}
+
+func TestRecordQualityRejectsBadSourceAndKeepsGrade(t *testing.T) {
+	ctx := context.Background()
+	q := &mockProxyQuerier{}
+	svc := New(q, testKeys(t))
+	if _, err := svc.RecordQuality(ctx, 7, 3, QualityWrite{OK: true, LatencyMS: 80, Source: "browser"}); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("非法来源必须拒绝: %v", err)
+	}
+	got, err := svc.RecordQuality(ctx, 7, 3, QualityWrite{OK: false, LatencyMS: 10, ErrorClass: "tls_fail", Source: proxyquality.SourceManual})
+	if err != nil {
+		t.Fatalf("合法回写: %v", err)
+	}
+	if got.Quality.Grade != proxyquality.GradePoor || got.Quality.ErrorClass != "tls_fail" {
+		t.Fatalf("失败必须记差档: %+v", got.Quality)
 	}
 }
 

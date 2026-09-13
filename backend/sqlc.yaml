@@ -11,6 +11,7 @@ sql:
       - sql/queries/admin_provider_account_mutations.sql
       - sql/queries/admin_provider_account_bulk.sql
       - sql/queries/admin_proxies.sql
+      - sql/queries/admin_proxy_quality.sql
       - sql/queries/admin_tls_fingerprint_profiles.sql
       - sql/queries/admin_tokens.sql
       - sql/queries/admin_users.sql

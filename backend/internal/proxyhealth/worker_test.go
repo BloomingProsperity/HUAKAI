@@ -54,11 +54,13 @@ func (f fakeLister) List(context.Context) ([]ProxyTarget, error) { return f.rows
 
 type fakeProber struct{ ok bool }
 
-func (f fakeProber) Probe(context.Context, ProxyTarget) bool { return f.ok }
+func (f fakeProber) Probe(context.Context, ProxyTarget) Observation {
+	return Observation{Reachable: f.ok}
+}
 
-type proberFunc func(context.Context, ProxyTarget) bool
+type proberFunc func(context.Context, ProxyTarget) Observation
 
-func (f proberFunc) Probe(ctx context.Context, target ProxyTarget) bool {
+func (f proberFunc) Probe(ctx context.Context, target ProxyTarget) Observation {
 	return f(ctx, target)
 }
 
@@ -132,6 +134,56 @@ func TestWorker_Tick_RecoversAfterThreshold(t *testing.T) {
 
 // 无状态转移 -> Touch 推进 last_check_at(这样「最久未检查优先」的排序能向前
 // 推进, 该 proxy 也会被重新探测)。
+type recordingStore struct {
+	fakeStore
+	obs []Observation
+}
+
+func (s *recordingStore) RecordQuality(_ context.Context, tenantID, id int64, obs Observation) (bool, error) {
+	if tenantID <= 0 {
+		return false, errors.New("quality write missing tenant")
+	}
+	s.obs = append(s.obs, obs)
+	s.touched = append(s.touched, id)
+	return true, nil
+}
+
+func TestWorker_Tick_DoesNotInventQualityWhenProberMissing(t *testing.T) {
+	store := &recordingStore{}
+	w := NewWorker(
+		fakeLister{rows: []ProxyTarget{{ID: 8, TenantID: 9, Status: "active", Host: "h", Port: 1}}},
+		nil,
+		store,
+		time.Minute,
+		nil,
+	)
+	w.tick(context.Background())
+	if len(store.obs) != 0 {
+		t.Fatalf("无探测核不得伪造差档快照: %+v", store.obs)
+	}
+}
+
+func TestWorker_Tick_WritesQualityAndSkipsDeadOnUnsafeHost(t *testing.T) {
+	store := &recordingStore{}
+	w := NewWorker(
+		fakeLister{rows: []ProxyTarget{{ID: 8, TenantID: 9, Status: "active", Host: "h", Port: 1}}},
+		proberFunc(func(context.Context, ProxyTarget) Observation {
+			return Observation{ErrorClass: ErrClassUnsafeProxyHost}
+		}),
+		store,
+		time.Minute,
+		nil,
+	)
+	w.state[8] = &counters{fails: deadThreshold - 1}
+	w.tick(context.Background())
+	if len(store.set) != 0 {
+		t.Fatalf("不安全主机不得标 dead, set=%v", store.set)
+	}
+	if len(store.obs) != 1 || store.obs[0].ErrorClass != ErrClassUnsafeProxyHost {
+		t.Fatalf("必须写差档快照: %+v", store.obs)
+	}
+}
+
 func TestWorker_Tick_TouchesWhenNoChange(t *testing.T) {
 	store := &fakeStore{}
 	w := NewWorker(
@@ -150,9 +202,9 @@ func TestWorker_Tick_DoesNotOverwriteConcurrentAdminDisable(t *testing.T) {
 	store := &casStatusStore{status: "active"}
 	w := NewWorker(
 		fakeLister{rows: []ProxyTarget{{ID: 4, TenantID: 9, Status: "active", Host: "h", Port: 1}}},
-		proberFunc(func(context.Context, ProxyTarget) bool {
+		proberFunc(func(context.Context, ProxyTarget) Observation {
 			store.status = "disabled"
-			return false
+			return Observation{}
 		}),
 		store,
 		time.Minute,

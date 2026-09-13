@@ -1366,12 +1366,10 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, logger *zap.Logger, s
 		rt.quotaReconcileStop = quotaWorker.Stop
 	}
 
-	// PROXY-04: 代理池健康探测 worker, 带迟滞维护 status (active<->dead)。无此
-	// worker 时一个 flap 的代理会被永久 dead, 绑定它的账号 fail-closed 永不自愈;
-	// TCP 探活恢复后账号自动回来。随 ctx 取消停。
+	// 代理池健康探测:与人工 canary 同核,写质量快照,并用迟滞维护 active/dead。
 	proxyHealthWorker := proxyhealth.NewWorker(
 		proxyhealth.NewPostgresLister(pgPool),
-		proxyhealth.NewTCPProber(5*time.Second),
+		buildProxyHealthProber(&deps{adminQueries: adminQueries, credentialKeys: credentialKeys}),
 		proxyhealth.NewPostgresStatusStore(pgPool),
 		proxyhealth.DefaultInterval,
 		nil,

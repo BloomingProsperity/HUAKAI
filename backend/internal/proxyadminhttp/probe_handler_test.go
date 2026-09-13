@@ -40,6 +40,13 @@ func TestProbeHandlerHappyPathReturnsResultWithoutCredentials(t *testing.T) {
 	if !prober.called || prober.gotTenant != 7 || prober.gotID != 5 {
 		t.Fatalf("Prober 应按 tenant=7 id=5 调用,实得 called=%v tenant=%d id=%d", prober.called, prober.gotTenant, prober.gotID)
 	}
+	svc := d.Service.(*proxyServiceStub)
+	if svc.qualityCalls != 1 || svc.qualityTenant != 7 || svc.qualityID != 5 || !svc.qualityIn.OK || svc.qualityIn.Source != "manual" {
+		t.Fatalf("人工探测必须回写质量快照: %+v", svc.qualityIn)
+	}
+	if resp.Grade != "excellent" || !resp.Fresh || resp.Source != "manual" || resp.EffectiveGrade != "excellent" {
+		t.Fatalf("响应缺质量档: %+v", resp)
+	}
 	// 响应体绝不能含代理 URL/凭据/密码等敏感串。
 	body := strings.ToLower(rec.Body.String())
 	for _, leak := range []string{"password", "secret", "auth_secret", "://", "@"} {
@@ -63,11 +70,48 @@ func TestProbeHandlerTenantOperatorCannotProbeOtherTenant(t *testing.T) {
 	}
 }
 
+func TestProbeHandlerIgnoresRequestBodyTarget(t *testing.T) {
+	prober := &proberStub{out: ProbeOutcome{OK: true, LatencyMS: 10}}
+	d := Deps{Auth: authStub{ident: platformAdmin()}, Service: &proxyServiceStub{}, Prober: prober}
+	rec := invoke(t, d, http.MethodPost, "/admin/v1/proxies/5/test?tenant_id=7", `{"url":"http://169.254.169.254/latest/meta-data"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("状态码=%d 期望 200;体=%s", rec.Code, rec.Body.String())
+	}
+	if !prober.called || prober.gotTenant != 7 || prober.gotID != 5 {
+		t.Fatalf("请求体不得改探测对象: tenant=%d id=%d", prober.gotTenant, prober.gotID)
+	}
+	if strings.Contains(strings.ToLower(rec.Body.String()), "169.254") {
+		t.Fatalf("响应不得回显请求体目标: %s", rec.Body.String())
+	}
+}
+
 func TestProbeHandlerNilProberReturns503(t *testing.T) {
 	d := Deps{Auth: authStub{ident: platformAdmin()}, Service: &proxyServiceStub{}, Prober: nil}
 	rec := invoke(t, d, http.MethodPost, "/admin/v1/proxies/5/test?tenant_id=7", "")
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("Prober 未配应 503,实得 %d", rec.Code)
+	}
+}
+
+func TestProbeHandlerNilServiceReturns503(t *testing.T) {
+	prober := &proberStub{out: ProbeOutcome{OK: true, LatencyMS: 12}}
+	d := Deps{Auth: authStub{ident: platformAdmin()}, Service: nil, Prober: prober}
+	rec := invoke(t, d, http.MethodPost, "/admin/v1/proxies/5/test?tenant_id=7", "")
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("质量面未配应 503,实得 %d", rec.Code)
+	}
+}
+
+func TestProbeHandlerPersistFailureReturns503(t *testing.T) {
+	prober := &proberStub{out: ProbeOutcome{OK: true, LatencyMS: 12}}
+	svc := &proxyServiceStub{qualityErr: proxyadmin.ErrBackend}
+	d := Deps{Auth: authStub{ident: platformAdmin()}, Service: svc, Prober: prober}
+	rec := invoke(t, d, http.MethodPost, "/admin/v1/proxies/5/test?tenant_id=7", "")
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("快照写入失败应 503,实得 %d 体=%s", rec.Code, rec.Body.String())
+	}
+	if svc.qualityCalls != 1 {
+		t.Fatal("探测成功后必须尝试落库")
 	}
 }
 

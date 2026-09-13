@@ -24,6 +24,7 @@ const (
 	ErrClassDialTimeout     = "dial_timeout"       // 经代理建隧道超时
 	ErrClassTunnelRefused   = "tunnel_refused"     // 代理拒绝/隧道建立失败
 	ErrClassTLSFail         = "tls_fail"           // 隧道通但到 canary 的 TLS 握手失败
+	ErrClassTCPUnreachable  = "tcp_unreachable"    // 仅 TCP 拨号失败，未走隧道 canary
 )
 
 // ProbeResult 是一次主动 probe-through 的结果。**绝不含代理 URL/凭据/原始错误**。

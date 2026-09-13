@@ -40,6 +40,7 @@ type proxyService interface {
 	DeleteImpact(ctx context.Context, tenantID, id int64) (proxyadmin.DeleteImpact, error)
 	DeleteWithAudit(ctx context.Context, tenantID, id int64, audit proxyadmin.MutationAudit) error
 	SetStatusWithAudit(ctx context.Context, tenantID, id int64, status string, audit proxyadmin.MutationAudit) error
+	RecordQuality(ctx context.Context, tenantID, id int64, in proxyadmin.QualityWrite) (proxyadmin.Proxy, error)
 }
 
 // Deps 接线管理代理面。Auth 是共享的管理解析器;Service 是 proxyadmin 业务层;
@@ -90,9 +91,23 @@ type proxyResponse struct {
 	AuthUsername *string `json:"auth_username"`
 	GroupID      *string `json:"group_id"`
 	Status       string  `json:"status"`
-	LastCheckAt  *string `json:"last_check_at"`
-	CreatedAt    string  `json:"created_at"`
-	UpdatedAt    string  `json:"updated_at"`
+	LastCheckAt  *string         `json:"last_check_at"`
+	Quality      *qualityResponse `json:"quality"`
+	CreatedAt    string          `json:"created_at"`
+	UpdatedAt    string          `json:"updated_at"`
+}
+
+type qualityResponse struct {
+	ProbedAt         string `json:"probed_at"`
+	OK               bool   `json:"ok"`
+	LatencyMS        int64  `json:"latency_ms"`
+	ErrorClass       string `json:"error_class,omitempty"`
+	Grade            string `json:"grade"`
+	Source           string `json:"source"`
+	SuccessAt        string `json:"success_at,omitempty"`
+	SuccessLatencyMS *int64 `json:"success_latency_ms,omitempty"`
+	Fresh            bool   `json:"fresh"`
+	EffectiveGrade   string `json:"effective_grade"`
 }
 
 type deleteImpactResponse struct {
@@ -126,9 +141,37 @@ func toProxyResponse(p proxyadmin.Proxy) proxyResponse {
 		GroupID:      p.GroupID,
 		Status:       p.Status,
 		LastCheckAt:  timestampPtr(p.LastCheckAt),
+		Quality:      toQualityResponse(p.Quality),
 		CreatedAt:    timestamp(p.CreatedAt),
 		UpdatedAt:    timestamp(p.UpdatedAt),
 	}
+}
+
+func toQualityResponse(q proxyadmin.Quality) *qualityResponse {
+	if !q.HasSnapshot || q.ProbedAt == nil {
+		return nil
+	}
+	out := &qualityResponse{
+		ProbedAt:       q.ProbedAt.UTC().Format(time.RFC3339),
+		ErrorClass:     q.ErrorClass,
+		Grade:          q.Grade,
+		Source:         q.Source,
+		Fresh:          q.Fresh,
+		EffectiveGrade: q.EffectiveGrade,
+	}
+	if q.OK != nil {
+		out.OK = *q.OK
+	}
+	if q.LatencyMS != nil {
+		out.LatencyMS = *q.LatencyMS
+	}
+	if q.SuccessAt != nil {
+		out.SuccessAt = q.SuccessAt.UTC().Format(time.RFC3339)
+	}
+	if q.SuccessLatencyMS != nil {
+		out.SuccessLatencyMS = q.SuccessLatencyMS
+	}
+	return out
 }
 
 type createProxyRequest struct {
@@ -478,6 +521,8 @@ func writeServiceError(w http.ResponseWriter, err error, context string) {
 			"proxy host is a blocked loopback, link-local, multicast, unspecified, or metadata target")
 	case errors.Is(err, proxyadmin.ErrNotFound):
 		writeError(w, http.StatusNotFound, "admin_proxy_not_found", "proxy not found")
+	case errors.Is(err, proxyadmin.ErrStoreNotConfigured):
+		writeError(w, http.StatusServiceUnavailable, "quality_store_unavailable", "proxy quality store not configured")
 	case errors.Is(err, proxyadmin.ErrInUse):
 		var inUse *proxyadmin.InUseError
 		if errors.As(err, &inUse) {

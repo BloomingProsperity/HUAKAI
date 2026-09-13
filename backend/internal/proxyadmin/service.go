@@ -22,6 +22,7 @@ type Querier interface {
 	GetProxy(context.Context, admindb.GetProxyParams) (admindb.GetProxyRow, error)
 	GetProxyDeleteImpact(context.Context, admindb.GetProxyDeleteImpactParams) (admindb.GetProxyDeleteImpactRow, error)
 	ListProxiesByTenant(context.Context, int64) ([]admindb.ListProxiesByTenantRow, error)
+	RecordProxyQuality(context.Context, admindb.RecordProxyQualityParams) (admindb.RecordProxyQualityRow, error)
 	SetProxyStatus(context.Context, admindb.SetProxyStatusParams) (int64, error)
 	DeleteProxyIfUnused(context.Context, admindb.DeleteProxyIfUnusedParams) (admindb.DeleteProxyIfUnusedRow, error)
 }

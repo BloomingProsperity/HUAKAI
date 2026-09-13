@@ -31,8 +31,32 @@ type Proxy struct {
 	GroupID      *string
 	Status       string
 	LastCheckAt  *time.Time
+	Quality      Quality
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
+}
+
+// Quality 是线路探测快照的脱敏投影。从未探测时 HasSnapshot=false。
+type Quality struct {
+	HasSnapshot      bool
+	ProbedAt         *time.Time
+	OK               *bool
+	LatencyMS        *int64
+	ErrorClass       string
+	Grade            string
+	Source           string
+	SuccessAt        *time.Time
+	SuccessLatencyMS *int64
+	Fresh            bool
+	EffectiveGrade   string
+}
+
+// QualityWrite 是一次探测回写。来源只能是人工或周期。
+type QualityWrite struct {
+	OK         bool
+	LatencyMS  int64
+	ErrorClass string
+	Source     string
 }
 
 // DeleteImpact 是删除前的租户内引用投影。它不暴露账号、租户或代理凭据，只返回
