@@ -7,6 +7,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/workerpulse"
 )
 
 // ReminderWorker 后台 ticker: 周期扫描临近到期订阅并发分档提醒。
@@ -25,13 +27,20 @@ type ReminderWorker struct {
 	tickCount   atomic.Uint64 // 累计 tick
 	sentTotal   atomic.Uint64 // 累计已发提醒条数
 	failedTicks atomic.Uint64 // 出错 tick 数
+
+	leaderLease LeaderLease
+	pulse       workerpulse.Recorder
+	replicaID   string
 }
 
 // ReminderWorkerConfig 构造参数。
 type ReminderWorkerConfig struct {
-	Service   *ReminderService
-	Interval  time.Duration // 0 用 DefaultReminderInterval
-	BatchSize int           // <=0 用 DefaultReminderBatchSize
+	Service     *ReminderService
+	Interval    time.Duration // 0 用 DefaultReminderInterval
+	BatchSize   int           // <=0 用 DefaultReminderBatchSize
+	LeaderLease LeaderLease
+	Pulse       workerpulse.Recorder
+	ReplicaID   string
 }
 
 // NewReminderWorker 构造提醒 worker。
@@ -42,10 +51,17 @@ func NewReminderWorker(cfg ReminderWorkerConfig) *ReminderWorker {
 	if cfg.BatchSize <= 0 {
 		cfg.BatchSize = DefaultReminderBatchSize
 	}
+	replicaID := cfg.ReplicaID
+	if replicaID == "" {
+		replicaID = workerpulse.ReplicaID()
+	}
 	return &ReminderWorker{
-		svc:       cfg.Service,
-		interval:  cfg.Interval,
-		batchSize: cfg.BatchSize,
+		svc:         cfg.Service,
+		interval:    cfg.Interval,
+		batchSize:   cfg.BatchSize,
+		leaderLease: cfg.LeaderLease,
+		pulse:       cfg.Pulse,
+		replicaID:   replicaID,
 	}
 }
 
@@ -86,11 +102,20 @@ func (w *ReminderWorker) tick(ctx context.Context) {
 		return
 	}
 	defer w.running.Store(false)
-	w.tickCount.Add(1)
-	n, err := w.svc.ProcessDueReminders(ctx, w.batchSize)
-	if n > 0 {
-		w.sentTotal.Add(uint64(n))
+	executed, err := runGuardedTick(ctx, w.leaderLease, w.pulse, w.replicaID, workerpulse.JobSubscriptionReminder, func() error {
+		n, workErr := w.svc.ProcessDueReminders(ctx, w.batchSize)
+		if n > 0 {
+			w.sentTotal.Add(uint64(n))
+		}
+		return workErr
+	})
+	if !executed {
+		if err != nil {
+			w.failedTicks.Add(1)
+		}
+		return
 	}
+	w.tickCount.Add(1)
 	if err != nil {
 		w.failedTicks.Add(1)
 	}

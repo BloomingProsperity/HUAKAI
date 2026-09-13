@@ -13,6 +13,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/modelsync"
+	"github.com/BloomingProsperity/HUAKAI/internal/workerpulse"
 )
 
 func TestModelSyncHandlerRequiresPlatformAdminBeforeService(t *testing.T) {
@@ -91,26 +92,56 @@ func TestModelSyncHandlerRejectsOverlongReason(t *testing.T) {
 }
 
 func TestModelSyncStatusReturnsSchedulerStateForPlatformAdmin(t *testing.T) {
-	lastRun := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
-	lastSuccess := lastRun.Add(-time.Hour)
+	lastRun := time.Now().UTC().Truncate(time.Second)
+	lastSuccess := lastRun.Add(-time.Minute)
+	localRun := lastRun.Add(-3 * time.Hour)
+	store := workerpulse.NewMemoryStore()
+	if err := store.Record(context.Background(), workerpulse.Record{
+		JobKey: workerpulse.JobModelSync, ReplicaID: "node-a",
+		SeenAt: lastRun, SuccessAt: lastSuccess, LastError: "upstream unavailable", Executor: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	rec := invokeModelSyncRequest(t, http.MethodGet, AdminModelSyncDeps{
 		Auth: apiKeyAuthStub{ident: platformAdmin()},
 		Scheduler: modelSyncSchedulerStub{status: modelsync.SchedulerStatus{
-			LastRunAt: lastRun, LastSuccessAt: lastSuccess, LastErr: "upstream unavailable",
+			LastRunAt: localRun, LastSuccessAt: localRun, LastErr: "ignored local snapshot",
 		}},
+		Pulses:    store,
+		ReplicaID: "node-b",
 	}, "")
 
 	assertModelSyncStatus(t, rec, http.StatusOK)
 	for _, want := range []string{
 		`"object":"admin_model_sync_status"`,
 		`"enabled":true`,
-		`"last_run_at":"2026-07-20T12:00:00Z"`,
-		`"last_success_at":"2026-07-20T11:00:00Z"`,
+		`"answering_replica":"node-b"`,
+		`"executor_replica":"node-a"`,
 		`"last_error":"upstream unavailable"`,
 	} {
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Fatalf("状态响应缺少 %s：%s", want, rec.Body.String())
 		}
+	}
+	if !strings.Contains(rec.Body.String(), lastRun.Format(time.RFC3339)) {
+		t.Fatalf("缺少集群 last_run: %s", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), localRun.Format(time.RFC3339)) {
+		t.Fatalf("本副本内存时间不应出现在集群口径: %s", rec.Body.String())
+	}
+}
+
+func TestModelSyncStatusFailsClosedWhenPulseStoreDown(t *testing.T) {
+	store := workerpulse.NewMemoryStore()
+	store.Fail(errors.New("database unavailable"))
+	rec := invokeModelSyncRequest(t, http.MethodGet, AdminModelSyncDeps{
+		Auth:      apiKeyAuthStub{ident: platformAdmin()},
+		Scheduler: modelSyncSchedulerStub{},
+		Pulses:    store,
+	}, "")
+	assertModelSyncStatus(t, rec, http.StatusServiceUnavailable)
+	if strings.Contains(rec.Body.String(), "ignored") {
+		t.Fatalf("memory snapshot leaked: %s", rec.Body.String())
 	}
 }
 

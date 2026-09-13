@@ -108,6 +108,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/videoclient"
 	"github.com/BloomingProsperity/HUAKAI/internal/videohttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/voucherhttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/workerpulse"
 )
 
 func (d *deps) AdminObservabilityAuth() adminobservabilityhttp.AdminObservabilityAuth {
@@ -1193,6 +1194,8 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 			Auth:      d.adminAuth,
 			Service:   d.modelSync,
 			Scheduler: d.modelSyncScheduler,
+			Pulses:    d.workerPulse,
+			ReplicaID: workerpulse.ReplicaID(),
 		})
 	})
 	r.Route("/admin/v1/model-discoveries", func(r chi.Router) {

@@ -7,6 +7,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/workerpulse"
 )
 
 // DefaultExpiryInterval 到期扫描周期 (默认 1 分钟)。
@@ -29,16 +31,23 @@ type ExpiryWorker struct {
 	done    chan struct{}
 
 	running      atomic.Bool   // 防 tick 重入 (TickOnce 与 loop 并发)
-	tickCount    atomic.Uint64 // 累计 tick
+	tickCount    atomic.Uint64 // 累计本副本实际执行
 	expiredTotal atomic.Uint64 // 累计到期处理条数
 	failedTicks  atomic.Uint64 // 出错 tick 数 (运维 metrics)
+
+	leaderLease LeaderLease
+	pulse       workerpulse.Recorder
+	replicaID   string
 }
 
 // ExpiryWorkerConfig 构造参数。
 type ExpiryWorkerConfig struct {
-	Service   *Service
-	Interval  time.Duration // 0 用 DefaultExpiryInterval
-	BatchSize int           // <=0 用 DefaultExpiryBatchSize
+	Service     *Service
+	Interval    time.Duration // 0 用 DefaultExpiryInterval
+	BatchSize   int           // <=0 用 DefaultExpiryBatchSize
+	LeaderLease LeaderLease
+	Pulse       workerpulse.Recorder
+	ReplicaID   string
 }
 
 // NewExpiryWorker 构造到期 worker。
@@ -49,10 +58,17 @@ func NewExpiryWorker(cfg ExpiryWorkerConfig) *ExpiryWorker {
 	if cfg.BatchSize <= 0 {
 		cfg.BatchSize = DefaultExpiryBatchSize
 	}
+	replicaID := cfg.ReplicaID
+	if replicaID == "" {
+		replicaID = workerpulse.ReplicaID()
+	}
 	return &ExpiryWorker{
-		svc:       cfg.Service,
-		interval:  cfg.Interval,
-		batchSize: cfg.BatchSize,
+		svc:         cfg.Service,
+		interval:    cfg.Interval,
+		batchSize:   cfg.BatchSize,
+		leaderLease: cfg.LeaderLease,
+		pulse:       cfg.Pulse,
+		replicaID:   replicaID,
 	}
 }
 
@@ -92,19 +108,29 @@ func (w *ExpiryWorker) tick(ctx context.Context) {
 		return
 	}
 	defer w.running.Store(false)
-	w.tickCount.Add(1)
-	for {
-		n, err := w.svc.ProcessDueExpiries(ctx, w.batchSize)
-		if n > 0 {
-			w.expiredTotal.Add(uint64(n))
+	executed, err := runGuardedTick(ctx, w.leaderLease, w.pulse, w.replicaID, workerpulse.JobSubscriptionExpiry, func() error {
+		for {
+			n, workErr := w.svc.ProcessDueExpiries(ctx, w.batchSize)
+			if n > 0 {
+				w.expiredTotal.Add(uint64(n))
+			}
+			if workErr != nil {
+				return workErr
+			}
+			if n < w.batchSize {
+				return nil
+			}
 		}
+	})
+	if !executed {
 		if err != nil {
 			w.failedTicks.Add(1)
-			return // 下个 tick 重试剩余
 		}
-		if n < w.batchSize {
-			return // 已 drain 完
-		}
+		return
+	}
+	w.tickCount.Add(1)
+	if err != nil {
+		w.failedTicks.Add(1)
 	}
 }
 

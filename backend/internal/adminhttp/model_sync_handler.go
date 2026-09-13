@@ -13,12 +13,15 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/modelsync"
+	"github.com/BloomingProsperity/HUAKAI/internal/workerpulse"
 )
 
 type AdminModelSyncDeps struct {
 	Auth      adminModelSyncAuth
 	Service   adminModelSyncService
 	Scheduler adminModelSyncScheduler
+	Pulses    workerpulse.Reader
+	ReplicaID string
 }
 
 type adminModelSyncAuth interface {
@@ -63,11 +66,13 @@ type modelSyncResultItemBody struct {
 }
 
 type modelSyncStatusBody struct {
-	Object        string  `json:"object"`
-	Enabled       bool    `json:"enabled"`
-	LastRunAt     *string `json:"last_run_at"`
-	LastSuccessAt *string `json:"last_success_at"`
-	LastError     string  `json:"last_error,omitempty"`
+	Object            string                 `json:"object"`
+	Enabled           bool                   `json:"enabled"`
+	AnsweringReplica  string                 `json:"answering_replica"`
+	LastRunAt         *string                `json:"last_run_at"`
+	LastSuccessAt     *string                `json:"last_success_at"`
+	LastError         string                 `json:"last_error,omitempty"`
+	Cluster           workerpulse.ClusterView `json:"cluster"`
 }
 
 func MountModelSyncRoutes(r chi.Router, d AdminModelSyncDeps) {
@@ -91,12 +96,23 @@ func newModelSyncStatusHandler(d AdminModelSyncDeps) http.HandlerFunc {
 			writeAdminError(w, admin.ErrAdminForbidden)
 			return
 		}
-		body := modelSyncStatusBody{Object: "admin_model_sync_status", Enabled: d.Scheduler != nil}
-		if d.Scheduler != nil {
-			status := d.Scheduler.Status()
-			body.LastRunAt = formatModelSyncStatusTime(status.LastRunAt)
-			body.LastSuccessAt = formatModelSyncStatusTime(status.LastSuccessAt)
-			body.LastError = status.LastErr
+		cluster, err := workerpulse.Load(r.Context(), d.Pulses, workerpulse.JobModelSync, time.Now().UTC())
+		if err != nil {
+			writeError(w, http.StatusServiceUnavailable, "worker_cluster_unavailable", "model sync cluster status unavailable")
+			return
+		}
+		replicaID := strings.TrimSpace(d.ReplicaID)
+		if replicaID == "" {
+			replicaID = workerpulse.ReplicaID()
+		}
+		body := modelSyncStatusBody{
+			Object:           "admin_model_sync_status",
+			Enabled:          d.Scheduler != nil,
+			AnsweringReplica: replicaID,
+			LastRunAt:        cluster.LastTickAt,
+			LastSuccessAt:    cluster.LastSuccessAt,
+			LastError:        cluster.LastError,
+			Cluster:          cluster,
 		}
 		writeAdminCatalogJSON(w, http.StatusOK, body)
 	}

@@ -8318,7 +8318,7 @@ paths:
   /v1/admin/notifications/worker-stats:
     get:
       tags: [admin-notifications]
-      summary: Read in-process subscription notification worker counters
+      summary: Read subscription worker process counters and cluster pulses
       operationId: getAdminNotificationWorkerStats
       x-huakai-spec-source:
         - backend/internal/subscriptionhttp/admin_worker_stats.go
@@ -8326,7 +8326,7 @@ paths:
       x-huakai-required-role: platform_admin
       responses:
         '200':
-          description: Current reminder and expiry worker counters.
+          description: 本副本计数加上跨副本心跳集群口径；心跳面不可用返回 503。
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AdminNotificationWorkerStats' }
@@ -14393,31 +14393,35 @@ paths:
   /admin/v1/model-sync:
     get:
       tags: [admin-model-sync]
-      summary: 读取本节点模型同步调度状态
+      summary: 读取模型同步集群调度状态
       operationId: getAdminModelSyncStatus
       description: |
-        仅平台管理员可用。返回当前 Gateway 进程中 scheduler 的最后运行、最后成功和
-        最近错误；它不是多副本集群汇总。多副本部署中，非领导节点可能返回尚无运行记录，
-        前端必须把它显示为“本节点未知”，不能解释成整个集群从未同步。
+        仅平台管理员可用。`last_run_at` / `last_success_at` / `last_error` 来自跨副本心跳面,
+        不是应答本请求的副本内存快照。`answering_replica` 只标识谁应答了这次 HTTP。
+        `cluster` 给出是否在跑、当前执行者、各副本角色(executor/follower/stale)。
+        心跳面不可用返回 503,不得用本副本内存冒充全集群健康。
       x-huakai-spec-source:
         - backend/internal/adminhttp/model_sync_handler.go
         - backend/internal/modelsync/scheduler.go
+        - backend/internal/workerpulse/project.go
       x-huakai-required-role: platform_admin
       responses:
         '200':
-          description: 当前节点的模型同步调度快照。
+          description: 模型同步集群调度快照。
           content:
             application/json:
               schema:
                 type: object
                 additionalProperties: false
-                required: [object, enabled, last_run_at, last_success_at]
+                required: [object, enabled, answering_replica, last_run_at, last_success_at, cluster]
                 properties:
                   object: { type: string, enum: [admin_model_sync_status] }
                   enabled: { type: boolean }
+                  answering_replica: { type: string }
                   last_run_at: { type: [string, 'null'], format: date-time }
                   last_success_at: { type: [string, 'null'], format: date-time }
                   last_error: { type: string }
+                  cluster: { $ref: '#/components/schemas/AdminWorkerClusterView' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
@@ -18351,41 +18355,72 @@ components:
       additionalProperties: false
       x-huakai-spec-source:
         - backend/internal/subscriptionhttp/admin_worker_stats.go
-      required: [reminder, expiry, auto_renew, pending_reconciliation]
+      required: [answering_replica, reminder, expiry, auto_renew, pending_reconciliation]
       properties:
+        answering_replica: { type: string }
         reminder: { $ref: '#/components/schemas/AdminReminderWorkerStats' }
         expiry: { $ref: '#/components/schemas/AdminExpiryWorkerStats' }
         auto_renew: { $ref: '#/components/schemas/AdminAutoRenewWorkerStats' }
         pending_reconciliation: { $ref: '#/components/schemas/AdminPendingReconciliationWorkerStats' }
 
+    AdminWorkerClusterView:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/workerpulse/project.go
+      required: [running, last_tick_at, last_success_at, replica_count, fresh_replica_count, replicas]
+      properties:
+        running: { type: boolean }
+        executor_replica: { type: string }
+        last_tick_at: { type: [string, 'null'], format: date-time }
+        last_success_at: { type: [string, 'null'], format: date-time }
+        last_error: { type: string }
+        replica_count: { type: integer, minimum: 0 }
+        fresh_replica_count: { type: integer, minimum: 0 }
+        replicas:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [replica_id, role, last_seen_at]
+            properties:
+              replica_id: { type: string }
+              role: { type: string, enum: [executor, follower, stale] }
+              last_seen_at: { type: string, format: date-time }
+              last_success_at: { type: string, format: date-time }
+              last_error: { type: string }
+
     AdminReminderWorkerStats:
       type: object
       additionalProperties: false
-      required: [tick_count, sent_total, failed_ticks]
+      required: [tick_count, sent_total, failed_ticks, cluster]
       properties:
         tick_count: { type: integer, format: int64, minimum: 0 }
         sent_total: { type: integer, format: int64, minimum: 0 }
         failed_ticks: { type: integer, format: int64, minimum: 0 }
+        cluster: { $ref: '#/components/schemas/AdminWorkerClusterView' }
 
     AdminExpiryWorkerStats:
       type: object
       additionalProperties: false
-      required: [tick_count, expired_total, failed_ticks]
+      required: [tick_count, expired_total, failed_ticks, cluster]
       properties:
         tick_count: { type: integer, format: int64, minimum: 0 }
         expired_total: { type: integer, format: int64, minimum: 0 }
         failed_ticks: { type: integer, format: int64, minimum: 0 }
+        cluster: { $ref: '#/components/schemas/AdminWorkerClusterView' }
 
     AdminAutoRenewWorkerStats:
       type: object
       additionalProperties: false
-      required: [enabled, tick_count, renewed_total, skipped_total, failed_ticks]
+      required: [enabled, tick_count, renewed_total, skipped_total, failed_ticks, cluster]
       properties:
         enabled: { type: boolean }
         tick_count: { type: integer, format: int64, minimum: 0 }
         renewed_total: { type: integer, format: int64, minimum: 0 }
         skipped_total: { type: integer, format: int64, minimum: 0 }
         failed_ticks: { type: integer, format: int64, minimum: 0 }
+        cluster: { $ref: '#/components/schemas/AdminWorkerClusterView' }
 
     AdminPendingReconciliationWorkerStats:
       type: object

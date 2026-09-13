@@ -4,9 +4,12 @@ package subscription
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/workerpulse"
 )
 
 // DefaultAutoRenewInterval 自动续费扫描周期 (默认 5 分钟)。续费是 money 动作,
@@ -22,6 +25,8 @@ const DefaultAutoRenewBatchSize = 200
 // 运维约束: 此窗口须 > AutoRenewWorker.Interval + ExpiryWorker.Interval, 否则订阅可能在两次续费扫描
 // 之间就被到期收割; 若把续费 interval 调到 >30min, 须同步放大本窗口。
 const DefaultAutoRenewLeadWindow = 30 * time.Minute
+
+var errAutoRenewCursorStuck = errors.New("auto renew cursor did not advance")
 
 // AutoRenewWorker 后台 ticker: 周期扫"到点且 auto_renew=true"的订阅, 逐条尝试
 // "扣钱包余额 → 续期"。单 goroutine, 接 context cancellation 优雅退出。
@@ -42,13 +47,20 @@ type AutoRenewWorker struct {
 	renewedTotal atomic.Uint64 // 累计成功续费条数
 	skippedTotal atomic.Uint64 // 累计跳过条数 (余额不足 / 已续过 / 状态变更)
 	failedTicks  atomic.Uint64 // 出错 tick 数 (运维 metrics)
+
+	leaderLease LeaderLease
+	pulse       workerpulse.Recorder
+	replicaID   string
 }
 
 // AutoRenewWorkerConfig 构造参数。
 type AutoRenewWorkerConfig struct {
-	Service   *Service
-	Interval  time.Duration // 0 用 DefaultAutoRenewInterval
-	BatchSize int           // <=0 用 DefaultAutoRenewBatchSize
+	Service     *Service
+	Interval    time.Duration // 0 用 DefaultAutoRenewInterval
+	BatchSize   int           // <=0 用 DefaultAutoRenewBatchSize
+	LeaderLease LeaderLease
+	Pulse       workerpulse.Recorder
+	ReplicaID   string
 }
 
 // NewAutoRenewWorker 构造自动续费 worker。
@@ -59,10 +71,17 @@ func NewAutoRenewWorker(cfg AutoRenewWorkerConfig) *AutoRenewWorker {
 	if cfg.BatchSize <= 0 {
 		cfg.BatchSize = DefaultAutoRenewBatchSize
 	}
+	replicaID := cfg.ReplicaID
+	if replicaID == "" {
+		replicaID = workerpulse.ReplicaID()
+	}
 	return &AutoRenewWorker{
-		svc:       cfg.Service,
-		interval:  cfg.Interval,
-		batchSize: cfg.BatchSize,
+		svc:         cfg.Service,
+		interval:    cfg.Interval,
+		batchSize:   cfg.BatchSize,
+		leaderLease: cfg.LeaderLease,
+		pulse:       cfg.Pulse,
+		replicaID:   replicaID,
 	}
 }
 
@@ -103,37 +122,41 @@ func (w *AutoRenewWorker) tick(ctx context.Context) {
 		return
 	}
 	defer w.running.Store(false)
-	w.tickCount.Add(1)
-	cursor := AutoRenewCursor{}
-	hadError := false
-	for {
-		res, next, err := w.svc.processAutoRenewalPage(ctx, w.batchSize, cursor)
-		if res.Renewed > 0 {
-			w.renewedTotal.Add(uint64(res.Renewed))
+	executed, err := runGuardedTick(ctx, w.leaderLease, w.pulse, w.replicaID, workerpulse.JobSubscriptionAutoRenew, func() error {
+		cursor := AutoRenewCursor{}
+		var lastErr error
+		for {
+			res, next, pageErr := w.svc.processAutoRenewalPage(ctx, w.batchSize, cursor)
+			if res.Renewed > 0 {
+				w.renewedTotal.Add(uint64(res.Renewed))
+			}
+			if res.Skipped > 0 {
+				w.skippedTotal.Add(uint64(res.Skipped))
+			}
+			if pageErr != nil {
+				lastErr = pageErr
+			}
+			if res.Scanned == 0 {
+				return lastErr
+			}
+			if res.Scanned < w.batchSize {
+				return lastErr
+			}
+			if !next.After(cursor) {
+				return errAutoRenewCursorStuck
+			}
+			cursor = next
 		}
-		if res.Skipped > 0 {
-			w.skippedTotal.Add(uint64(res.Skipped))
-		}
+	})
+	if !executed {
 		if err != nil {
-			hadError = true
-		}
-		if res.Scanned == 0 {
-			if hadError {
-				w.failedTicks.Add(1)
-			}
-			return
-		}
-		if res.Scanned < w.batchSize {
-			if hadError {
-				w.failedTicks.Add(1)
-			}
-			return // 已 drain 完
-		}
-		if !next.After(cursor) {
 			w.failedTicks.Add(1)
-			return // 存储返回顺序违约时停止，防止同页无限循环
 		}
-		cursor = next
+		return
+	}
+	w.tickCount.Add(1)
+	if err != nil {
+		w.failedTicks.Add(1)
 	}
 }
 

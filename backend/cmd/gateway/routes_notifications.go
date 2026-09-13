@@ -8,6 +8,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/controlhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/subscriptionhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/usernoticehttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/workerpulse"
 )
 
 func mountNotificationRoutes(r chi.Router, d *deps) {
@@ -29,9 +30,17 @@ func mountNotificationRoutes(r chi.Router, d *deps) {
 		clientIPResolver = d.clientIPResolver
 		platformTenantID = d.platformTenantID
 	}
+	var pulses workerpulse.Reader
+	replicaID := ""
+	if d != nil {
+		pulses = d.workerPulse
+		replicaID = workerpulse.ReplicaID()
+	}
 	r.Get("/v1/admin/notifications/worker-stats", subscriptionhttp.NewAdminWorkerStatsHandler(subscriptionhttp.AdminWorkerStatsDeps{
-		Auth:   adminAuth,
-		Reader: reader,
+		Auth:      adminAuth,
+		Reader:    reader,
+		Pulses:    pulses,
+		ReplicaID: replicaID,
 	}))
 	r.Group(func(r chi.Router) {
 		r.Use(sessionauth.SessionMiddleware(sessions, clientIPResolver))
