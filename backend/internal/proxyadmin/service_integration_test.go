@@ -16,6 +16,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/proxyquality"
 )
 
 // 针对 proxyadmin 闭环的强真实 Postgres 测试。单元测试用桩 Querier;这些测试
@@ -525,5 +526,96 @@ FOR EACH ROW EXECUTE FUNCTION %s()`, functionName, triggerName, functionName)
 		tenantID, proxy.ID,
 	).Scan(&deletedAt); err != nil || deletedAt != nil {
 		t.Fatalf("删除日志失败留下半状态 deleted_at=%v err=%v", deletedAt, err)
+	}
+}
+
+func TestProxy_RecordQualityPersistsAndKeepsSuccess(t *testing.T) {
+	ctx := context.Background()
+	pool := openProxyPool(t, ctx)
+	tenantID := seedProxyTenant(t, ctx, pool, "quality")
+	otherTenant := seedProxyTenant(t, ctx, pool, "quality-other")
+	svc := New(admindb.New(pool), testKeys(t))
+	created, err := svc.Create(ctx, CreateInput{
+		TenantID: tenantID, Name: "quality-proxy", Protocol: "http", Host: "proxy.example.com", Port: 3128,
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	okRow, err := svc.RecordQuality(ctx, tenantID, created.ID, QualityWrite{
+		OK: true, LatencyMS: 90, Source: proxyquality.SourceManual,
+	})
+	if err != nil {
+		t.Fatalf("success write: %v", err)
+	}
+	if !okRow.Quality.HasSnapshot || okRow.Quality.OK == nil || !*okRow.Quality.OK || okRow.Quality.Grade != proxyquality.GradeExcellent {
+		t.Fatalf("成功快照不正确: %+v", okRow.Quality)
+	}
+	failRow, err := svc.RecordQuality(ctx, tenantID, created.ID, QualityWrite{
+		OK: false, LatencyMS: 4000, ErrorClass: "tls_fail", Source: proxyquality.SourcePeriodic,
+	})
+	if err != nil {
+		t.Fatalf("fail write: %v", err)
+	}
+	if failRow.Quality.OK == nil || *failRow.Quality.OK || failRow.Quality.Grade != proxyquality.GradePoor {
+		t.Fatalf("失败快照不正确: %+v", failRow.Quality)
+	}
+	if failRow.Quality.SuccessAt == nil || okRow.Quality.SuccessAt == nil {
+		t.Fatal("失败不得清空上次成功时刻")
+	}
+	if !failRow.Quality.SuccessAt.Equal(*okRow.Quality.SuccessAt) {
+		t.Fatalf("成功时刻被覆盖 success=%v prev=%v", failRow.Quality.SuccessAt, okRow.Quality.SuccessAt)
+	}
+	listed, err := svc.List(ctx, tenantID)
+	if err != nil || len(listed) != 1 || listed[0].Quality.ErrorClass != "tls_fail" {
+		t.Fatalf("列表必须读到同一快照 listed=%+v err=%v", listed, err)
+	}
+	if _, err := svc.RecordQuality(ctx, otherTenant, created.ID, QualityWrite{
+		OK: true, LatencyMS: 10, Source: proxyquality.SourceManual,
+	}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("跨租户回写必须 not_found: %v", err)
+	}
+}
+
+func TestProxy_RecordQualityConcurrentFailuresKeepSuccess(t *testing.T) {
+	ctx := context.Background()
+	pool := openProxyPool(t, ctx)
+	tenantID := seedProxyTenant(t, ctx, pool, "quality-race")
+	svc := New(admindb.New(pool), testKeys(t))
+	created, err := svc.Create(ctx, CreateInput{
+		TenantID: tenantID, Name: "quality-race", Protocol: "http", Host: "proxy.example.com", Port: 3128,
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	okRow, err := svc.RecordQuality(ctx, tenantID, created.ID, QualityWrite{
+		OK: true, LatencyMS: 80, Source: proxyquality.SourceManual,
+	})
+	if err != nil || okRow.Quality.SuccessAt == nil {
+		t.Fatalf("seed success: %v %+v", err, okRow.Quality)
+	}
+	wantSuccess := *okRow.Quality.SuccessAt
+	errCh := make(chan error, 16)
+	for i := 0; i < 16; i++ {
+		go func() {
+			_, recErr := svc.RecordQuality(ctx, tenantID, created.ID, QualityWrite{
+				OK: false, LatencyMS: 5000, ErrorClass: "tls_fail", Source: proxyquality.SourcePeriodic,
+			})
+			errCh <- recErr
+		}()
+	}
+	for i := 0; i < 16; i++ {
+		if recErr := <-errCh; recErr != nil {
+			t.Fatalf("并发失败回写: %v", recErr)
+		}
+	}
+	got, err := svc.Get(ctx, tenantID, created.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Quality.SuccessAt == nil || !got.Quality.SuccessAt.Equal(wantSuccess) {
+		t.Fatalf("并发失败不得改上次成功 success=%v want=%v", got.Quality.SuccessAt, wantSuccess)
+	}
+	if got.Quality.Grade != proxyquality.GradePoor {
+		t.Fatalf("并发失败后档位应为差档: %+v", got.Quality)
 	}
 }

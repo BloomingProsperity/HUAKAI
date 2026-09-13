@@ -16,6 +16,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauthtest"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/proxyadmin"
+	"github.com/BloomingProsperity/HUAKAI/internal/proxyquality"
 )
 
 // panicProxyQuerier 只用于证明非法 HTTP 输入会被真实 service 在数据库前拒绝。
@@ -33,6 +34,9 @@ func (panicProxyQuerier) GetProxy(context.Context, admindb.GetProxyParams) (admi
 }
 func (panicProxyQuerier) ListProxiesByTenant(context.Context, int64) ([]admindb.ListProxiesByTenantRow, error) {
 	panic("测试不应列代理")
+}
+func (panicProxyQuerier) RecordProxyQuality(context.Context, admindb.RecordProxyQualityParams) (admindb.RecordProxyQualityRow, error) {
+	panic("测试不应写质量快照")
 }
 func (panicProxyQuerier) GetProxyDeleteImpact(context.Context, admindb.GetProxyDeleteImpactParams) (admindb.GetProxyDeleteImpactRow, error) {
 	panic("测试不应读取删除影响")
@@ -88,6 +92,13 @@ type proxyServiceStub struct {
 	statusValue  string
 	statusAudit  proxyadmin.MutationAudit
 	statusErr    error
+
+	qualityCalls  int
+	qualityTenant int64
+	qualityID     int64
+	qualityIn     proxyadmin.QualityWrite
+	qualityRet    proxyadmin.Proxy
+	qualityErr    error
 }
 
 func TestProxyWritesAreSessionSafe(t *testing.T) {
@@ -152,6 +163,29 @@ func (s *proxyServiceStub) DeleteImpact(_ context.Context, tenantID, id int64) (
 	return s.impactRet, s.impactErr
 }
 
+func (s *proxyServiceStub) RecordQuality(_ context.Context, tenantID, id int64, in proxyadmin.QualityWrite) (proxyadmin.Proxy, error) {
+	s.qualityCalls++
+	s.qualityTenant, s.qualityID, s.qualityIn = tenantID, id, in
+	if s.qualityErr != nil {
+		return proxyadmin.Proxy{}, s.qualityErr
+	}
+	if s.qualityRet.ID != 0 {
+		return s.qualityRet, nil
+	}
+	ok := in.OK
+	latency := in.LatencyMS
+	now := time.Now().UTC()
+	grade := proxyquality.Grade(in.OK, in.LatencyMS)
+	return proxyadmin.Proxy{
+		ID: id, TenantID: tenantID, Status: "active",
+		Quality: proxyadmin.Quality{
+			HasSnapshot: true, ProbedAt: &now, OK: &ok, LatencyMS: &latency,
+			ErrorClass: in.ErrorClass, Grade: grade, Source: in.Source,
+			Fresh: true, EffectiveGrade: grade,
+		},
+	}, nil
+}
+
 func (s *proxyServiceStub) SetStatusWithAudit(_ context.Context, tenantID, id int64, status string, audit proxyadmin.MutationAudit) error {
 	s.statusCalls++
 	s.statusTenant, s.statusID, s.statusValue = tenantID, id, status
@@ -160,7 +194,7 @@ func (s *proxyServiceStub) SetStatusWithAudit(_ context.Context, tenantID, id in
 }
 
 func (s *proxyServiceStub) calls() int {
-	return s.listCalls + s.getCalls + s.createCalls + s.updateCalls + s.deleteCalls + s.impactCalls + s.statusCalls
+	return s.listCalls + s.getCalls + s.createCalls + s.updateCalls + s.deleteCalls + s.impactCalls + s.statusCalls + s.qualityCalls
 }
 
 type authStub struct {
@@ -255,6 +289,68 @@ func TestListProjectsNonSecretFieldsAndScopesTenant(t *testing.T) {
 	}
 }
 
+func TestListAndGetProjectQualityOrNull(t *testing.T) {
+	now := time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC)
+	ok := true
+	latency := int64(90)
+	successLatency := int64(90)
+	withSnap := proxyadmin.Proxy{
+		ID: 11, TenantID: 7, Name: "residential-a", Protocol: "http",
+		Host: "proxy.example.com", Port: 3128, Status: "active",
+		CreatedAt: now, UpdatedAt: now,
+		Quality: proxyadmin.Quality{
+			HasSnapshot: true, ProbedAt: &now, OK: &ok, LatencyMS: &latency,
+			Grade: "excellent", Source: "manual", SuccessAt: &now,
+			SuccessLatencyMS: &successLatency, Fresh: true, EffectiveGrade: "excellent",
+		},
+	}
+	empty := proxyadmin.Proxy{
+		ID: 12, TenantID: 7, Name: "residential-b", Protocol: "http",
+		Host: "proxy.example.com", Port: 3128, Status: "active",
+		CreatedAt: now, UpdatedAt: now,
+	}
+
+	listSvc := &proxyServiceStub{listRet: []proxyadmin.Proxy{withSnap, empty}}
+	listRec := invoke(t, Deps{Auth: authStub{ident: tenantOperator(7)}, Service: listSvc}, http.MethodGet, "/admin/v1/proxies", "")
+	assertStatus(t, listRec, http.StatusOK)
+	var listBody struct {
+		Items []struct {
+			ID      int64 `json:"id"`
+			Quality *struct {
+				Grade          string `json:"grade"`
+				Source         string `json:"source"`
+				Fresh          bool   `json:"fresh"`
+				EffectiveGrade string `json:"effective_grade"`
+				OK             bool   `json:"ok"`
+				LatencyMS      int64  `json:"latency_ms"`
+			} `json:"quality"`
+		} `json:"items"`
+	}
+	decodeBody(t, listRec, &listBody)
+	if len(listBody.Items) != 2 {
+		t.Fatalf("items=%d want 2", len(listBody.Items))
+	}
+	if listBody.Items[0].Quality == nil || listBody.Items[0].Quality.Grade != "excellent" ||
+		!listBody.Items[0].Quality.Fresh || listBody.Items[0].Quality.EffectiveGrade != "excellent" ||
+		!listBody.Items[0].Quality.OK || listBody.Items[0].Quality.LatencyMS != 90 {
+		t.Fatalf("有快照必须投影质量对象: %+v", listBody.Items[0].Quality)
+	}
+	if listBody.Items[1].Quality != nil {
+		t.Fatalf("无快照必须是 null，不能伪造档位: %+v", listBody.Items[1].Quality)
+	}
+
+	getSvc := &proxyServiceStub{getRet: empty}
+	getRec := invoke(t, Deps{Auth: authStub{ident: tenantOperator(7)}, Service: getSvc}, http.MethodGet, "/admin/v1/proxies/12", "")
+	assertStatus(t, getRec, http.StatusOK)
+	var getBody struct {
+		Quality *struct{} `json:"quality"`
+	}
+	decodeBody(t, getRec, &getBody)
+	if getBody.Quality != nil {
+		t.Fatalf("详情无快照必须是 null: %+v", getBody.Quality)
+	}
+}
+
 // TestResponseNeverContainsAuthSecret 是泄露绊线。create 输入携带明文 auth_secret;
 // 桩回显一个 Proxy(它在结构上没有凭据字段)。响应 JSON 既不能含键 "auth_secret",
 // 也不能含该凭据的值。变异:给 proxyResponse 加一个 auth_secret 字段
@@ -333,6 +429,7 @@ func TestAuthGateFiresBeforeService(t *testing.T) {
 		{http.MethodPatch, "/admin/v1/proxies/5", `{"name":"p","protocol":"http","host":"h","port":1}`},
 		{http.MethodDelete, "/admin/v1/proxies/5", ""},
 		{http.MethodPut, "/admin/v1/proxies/5/status", `{"status":"disabled"}`},
+		{http.MethodPost, "/admin/v1/proxies/5/test", `{"url":"http://169.254.169.254/"}`},
 	}
 	for _, c := range cases {
 		for _, e := range endpoints {

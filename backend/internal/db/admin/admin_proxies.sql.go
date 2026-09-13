@@ -22,7 +22,10 @@ INSERT INTO proxies (
 RETURNING
     id, tenant_id, name, protocol, host, port,
     auth_username, auth_secret, group_id,
-    status, last_check_at, created_at, updated_at
+    status, last_check_at,
+    quality_probed_at, quality_ok, quality_latency_ms, quality_error_class,
+    quality_grade, quality_source, quality_success_at, quality_success_latency_ms,
+    created_at, updated_at
 `
 
 type CreateProxyParams struct {
@@ -38,19 +41,27 @@ type CreateProxyParams struct {
 }
 
 type CreateProxyRow struct {
-	ID           int64              `db:"id" json:"id"`
-	TenantID     int64              `db:"tenant_id" json:"tenant_id"`
-	Name         string             `db:"name" json:"name"`
-	Protocol     string             `db:"protocol" json:"protocol"`
-	Host         string             `db:"host" json:"host"`
-	Port         int32              `db:"port" json:"port"`
-	AuthUsername *string            `db:"auth_username" json:"auth_username"`
-	AuthSecret   *string            `db:"auth_secret" json:"auth_secret"`
-	GroupID      *string            `db:"group_id" json:"group_id"`
-	Status       string             `db:"status" json:"status"`
-	LastCheckAt  pgtype.Timestamptz `db:"last_check_at" json:"last_check_at"`
-	CreatedAt    pgtype.Timestamptz `db:"created_at" json:"created_at"`
-	UpdatedAt    pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	ID                      int64              `db:"id" json:"id"`
+	TenantID                int64              `db:"tenant_id" json:"tenant_id"`
+	Name                    string             `db:"name" json:"name"`
+	Protocol                string             `db:"protocol" json:"protocol"`
+	Host                    string             `db:"host" json:"host"`
+	Port                    int32              `db:"port" json:"port"`
+	AuthUsername            *string            `db:"auth_username" json:"auth_username"`
+	AuthSecret              *string            `db:"auth_secret" json:"auth_secret"`
+	GroupID                 *string            `db:"group_id" json:"group_id"`
+	Status                  string             `db:"status" json:"status"`
+	LastCheckAt             pgtype.Timestamptz `db:"last_check_at" json:"last_check_at"`
+	QualityProbedAt         pgtype.Timestamptz `db:"quality_probed_at" json:"quality_probed_at"`
+	QualityOk               *bool              `db:"quality_ok" json:"quality_ok"`
+	QualityLatencyMs        *int64             `db:"quality_latency_ms" json:"quality_latency_ms"`
+	QualityErrorClass       string             `db:"quality_error_class" json:"quality_error_class"`
+	QualityGrade            *string            `db:"quality_grade" json:"quality_grade"`
+	QualitySource           *string            `db:"quality_source" json:"quality_source"`
+	QualitySuccessAt        pgtype.Timestamptz `db:"quality_success_at" json:"quality_success_at"`
+	QualitySuccessLatencyMs *int64             `db:"quality_success_latency_ms" json:"quality_success_latency_ms"`
+	CreatedAt               pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	UpdatedAt               pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
 }
 
 // auth_secret 应由调用方加密后传入 (HUAKAI credentialstore.KeyProvider)。
@@ -80,6 +91,14 @@ func (q *Queries) CreateProxy(ctx context.Context, arg CreateProxyParams) (Creat
 		&i.GroupID,
 		&i.Status,
 		&i.LastCheckAt,
+		&i.QualityProbedAt,
+		&i.QualityOk,
+		&i.QualityLatencyMs,
+		&i.QualityErrorClass,
+		&i.QualityGrade,
+		&i.QualitySource,
+		&i.QualitySuccessAt,
+		&i.QualitySuccessLatencyMs,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -174,7 +193,10 @@ const getProxy = `-- name: GetProxy :one
 SELECT
     id, tenant_id, name, protocol, host, port,
     auth_username, auth_secret, group_id,
-    status, last_check_at, created_at, updated_at
+    status, last_check_at,
+    quality_probed_at, quality_ok, quality_latency_ms, quality_error_class,
+    quality_grade, quality_source, quality_success_at, quality_success_latency_ms,
+    created_at, updated_at
 FROM proxies
 WHERE tenant_id = $1
   AND id = $2
@@ -187,19 +209,27 @@ type GetProxyParams struct {
 }
 
 type GetProxyRow struct {
-	ID           int64              `db:"id" json:"id"`
-	TenantID     int64              `db:"tenant_id" json:"tenant_id"`
-	Name         string             `db:"name" json:"name"`
-	Protocol     string             `db:"protocol" json:"protocol"`
-	Host         string             `db:"host" json:"host"`
-	Port         int32              `db:"port" json:"port"`
-	AuthUsername *string            `db:"auth_username" json:"auth_username"`
-	AuthSecret   *string            `db:"auth_secret" json:"auth_secret"`
-	GroupID      *string            `db:"group_id" json:"group_id"`
-	Status       string             `db:"status" json:"status"`
-	LastCheckAt  pgtype.Timestamptz `db:"last_check_at" json:"last_check_at"`
-	CreatedAt    pgtype.Timestamptz `db:"created_at" json:"created_at"`
-	UpdatedAt    pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	ID                      int64              `db:"id" json:"id"`
+	TenantID                int64              `db:"tenant_id" json:"tenant_id"`
+	Name                    string             `db:"name" json:"name"`
+	Protocol                string             `db:"protocol" json:"protocol"`
+	Host                    string             `db:"host" json:"host"`
+	Port                    int32              `db:"port" json:"port"`
+	AuthUsername            *string            `db:"auth_username" json:"auth_username"`
+	AuthSecret              *string            `db:"auth_secret" json:"auth_secret"`
+	GroupID                 *string            `db:"group_id" json:"group_id"`
+	Status                  string             `db:"status" json:"status"`
+	LastCheckAt             pgtype.Timestamptz `db:"last_check_at" json:"last_check_at"`
+	QualityProbedAt         pgtype.Timestamptz `db:"quality_probed_at" json:"quality_probed_at"`
+	QualityOk               *bool              `db:"quality_ok" json:"quality_ok"`
+	QualityLatencyMs        *int64             `db:"quality_latency_ms" json:"quality_latency_ms"`
+	QualityErrorClass       string             `db:"quality_error_class" json:"quality_error_class"`
+	QualityGrade            *string            `db:"quality_grade" json:"quality_grade"`
+	QualitySource           *string            `db:"quality_source" json:"quality_source"`
+	QualitySuccessAt        pgtype.Timestamptz `db:"quality_success_at" json:"quality_success_at"`
+	QualitySuccessLatencyMs *int64             `db:"quality_success_latency_ms" json:"quality_success_latency_ms"`
+	CreatedAt               pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	UpdatedAt               pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
 }
 
 func (q *Queries) GetProxy(ctx context.Context, arg GetProxyParams) (GetProxyRow, error) {
@@ -217,6 +247,14 @@ func (q *Queries) GetProxy(ctx context.Context, arg GetProxyParams) (GetProxyRow
 		&i.GroupID,
 		&i.Status,
 		&i.LastCheckAt,
+		&i.QualityProbedAt,
+		&i.QualityOk,
+		&i.QualityLatencyMs,
+		&i.QualityErrorClass,
+		&i.QualityGrade,
+		&i.QualitySource,
+		&i.QualitySuccessAt,
+		&i.QualitySuccessLatencyMs,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -287,92 +325,42 @@ func (q *Queries) GetProxyDeleteImpact(ctx context.Context, arg GetProxyDeleteIm
 	return i, err
 }
 
-const listActiveProxiesByTenant = `-- name: ListActiveProxiesByTenant :many
-SELECT
-    id, tenant_id, name, protocol, host, port,
-    auth_username, auth_secret,
-    status, last_check_at, created_at, updated_at
-FROM proxies
-WHERE tenant_id = $1
-  AND deleted_at IS NULL
-  AND status = 'active'
-ORDER BY id
-`
-
-type ListActiveProxiesByTenantRow struct {
-	ID           int64              `db:"id" json:"id"`
-	TenantID     int64              `db:"tenant_id" json:"tenant_id"`
-	Name         string             `db:"name" json:"name"`
-	Protocol     string             `db:"protocol" json:"protocol"`
-	Host         string             `db:"host" json:"host"`
-	Port         int32              `db:"port" json:"port"`
-	AuthUsername *string            `db:"auth_username" json:"auth_username"`
-	AuthSecret   *string            `db:"auth_secret" json:"auth_secret"`
-	Status       string             `db:"status" json:"status"`
-	LastCheckAt  pgtype.Timestamptz `db:"last_check_at" json:"last_check_at"`
-	CreatedAt    pgtype.Timestamptz `db:"created_at" json:"created_at"`
-	UpdatedAt    pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
-}
-
-// Phase 3 health check worker 用 (选 active 但 last_check_at 老的 ping)。
-func (q *Queries) ListActiveProxiesByTenant(ctx context.Context, tenantID int64) ([]ListActiveProxiesByTenantRow, error) {
-	rows, err := q.db.Query(ctx, listActiveProxiesByTenant, tenantID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []ListActiveProxiesByTenantRow
-	for rows.Next() {
-		var i ListActiveProxiesByTenantRow
-		if err := rows.Scan(
-			&i.ID,
-			&i.TenantID,
-			&i.Name,
-			&i.Protocol,
-			&i.Host,
-			&i.Port,
-			&i.AuthUsername,
-			&i.AuthSecret,
-			&i.Status,
-			&i.LastCheckAt,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const listProxiesByTenant = `-- name: ListProxiesByTenant :many
 
 SELECT
     id, tenant_id, name, protocol, host, port,
     auth_username, auth_secret, group_id,
-    status, last_check_at, created_at, updated_at
+    status, last_check_at,
+    quality_probed_at, quality_ok, quality_latency_ms, quality_error_class,
+    quality_grade, quality_source, quality_success_at, quality_success_latency_ms,
+    created_at, updated_at
 FROM proxies
 WHERE tenant_id = $1 AND deleted_at IS NULL
 ORDER BY id
 `
 
 type ListProxiesByTenantRow struct {
-	ID           int64              `db:"id" json:"id"`
-	TenantID     int64              `db:"tenant_id" json:"tenant_id"`
-	Name         string             `db:"name" json:"name"`
-	Protocol     string             `db:"protocol" json:"protocol"`
-	Host         string             `db:"host" json:"host"`
-	Port         int32              `db:"port" json:"port"`
-	AuthUsername *string            `db:"auth_username" json:"auth_username"`
-	AuthSecret   *string            `db:"auth_secret" json:"auth_secret"`
-	GroupID      *string            `db:"group_id" json:"group_id"`
-	Status       string             `db:"status" json:"status"`
-	LastCheckAt  pgtype.Timestamptz `db:"last_check_at" json:"last_check_at"`
-	CreatedAt    pgtype.Timestamptz `db:"created_at" json:"created_at"`
-	UpdatedAt    pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	ID                      int64              `db:"id" json:"id"`
+	TenantID                int64              `db:"tenant_id" json:"tenant_id"`
+	Name                    string             `db:"name" json:"name"`
+	Protocol                string             `db:"protocol" json:"protocol"`
+	Host                    string             `db:"host" json:"host"`
+	Port                    int32              `db:"port" json:"port"`
+	AuthUsername            *string            `db:"auth_username" json:"auth_username"`
+	AuthSecret              *string            `db:"auth_secret" json:"auth_secret"`
+	GroupID                 *string            `db:"group_id" json:"group_id"`
+	Status                  string             `db:"status" json:"status"`
+	LastCheckAt             pgtype.Timestamptz `db:"last_check_at" json:"last_check_at"`
+	QualityProbedAt         pgtype.Timestamptz `db:"quality_probed_at" json:"quality_probed_at"`
+	QualityOk               *bool              `db:"quality_ok" json:"quality_ok"`
+	QualityLatencyMs        *int64             `db:"quality_latency_ms" json:"quality_latency_ms"`
+	QualityErrorClass       string             `db:"quality_error_class" json:"quality_error_class"`
+	QualityGrade            *string            `db:"quality_grade" json:"quality_grade"`
+	QualitySource           *string            `db:"quality_source" json:"quality_source"`
+	QualitySuccessAt        pgtype.Timestamptz `db:"quality_success_at" json:"quality_success_at"`
+	QualitySuccessLatencyMs *int64             `db:"quality_success_latency_ms" json:"quality_success_latency_ms"`
+	CreatedAt               pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	UpdatedAt               pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
 }
 
 // HUAKAI F-FP-POOL Phase 1.3 sqlc queries — 出口代理池 CRUD。
@@ -400,6 +388,14 @@ func (q *Queries) ListProxiesByTenant(ctx context.Context, tenantID int64) ([]Li
 			&i.GroupID,
 			&i.Status,
 			&i.LastCheckAt,
+			&i.QualityProbedAt,
+			&i.QualityOk,
+			&i.QualityLatencyMs,
+			&i.QualityErrorClass,
+			&i.QualityGrade,
+			&i.QualitySource,
+			&i.QualitySuccessAt,
+			&i.QualitySuccessLatencyMs,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -472,7 +468,10 @@ WHERE tenant_id = $15
 RETURNING
     id, tenant_id, name, protocol, host, port,
     auth_username, auth_secret, group_id,
-    status, last_check_at, created_at, updated_at
+    status, last_check_at,
+    quality_probed_at, quality_ok, quality_latency_ms, quality_error_class,
+    quality_grade, quality_source, quality_success_at, quality_success_latency_ms,
+    created_at, updated_at
 `
 
 type UpdateProxyParams struct {
@@ -495,19 +494,27 @@ type UpdateProxyParams struct {
 }
 
 type UpdateProxyRow struct {
-	ID           int64              `db:"id" json:"id"`
-	TenantID     int64              `db:"tenant_id" json:"tenant_id"`
-	Name         string             `db:"name" json:"name"`
-	Protocol     string             `db:"protocol" json:"protocol"`
-	Host         string             `db:"host" json:"host"`
-	Port         int32              `db:"port" json:"port"`
-	AuthUsername *string            `db:"auth_username" json:"auth_username"`
-	AuthSecret   *string            `db:"auth_secret" json:"auth_secret"`
-	GroupID      *string            `db:"group_id" json:"group_id"`
-	Status       string             `db:"status" json:"status"`
-	LastCheckAt  pgtype.Timestamptz `db:"last_check_at" json:"last_check_at"`
-	CreatedAt    pgtype.Timestamptz `db:"created_at" json:"created_at"`
-	UpdatedAt    pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	ID                      int64              `db:"id" json:"id"`
+	TenantID                int64              `db:"tenant_id" json:"tenant_id"`
+	Name                    string             `db:"name" json:"name"`
+	Protocol                string             `db:"protocol" json:"protocol"`
+	Host                    string             `db:"host" json:"host"`
+	Port                    int32              `db:"port" json:"port"`
+	AuthUsername            *string            `db:"auth_username" json:"auth_username"`
+	AuthSecret              *string            `db:"auth_secret" json:"auth_secret"`
+	GroupID                 *string            `db:"group_id" json:"group_id"`
+	Status                  string             `db:"status" json:"status"`
+	LastCheckAt             pgtype.Timestamptz `db:"last_check_at" json:"last_check_at"`
+	QualityProbedAt         pgtype.Timestamptz `db:"quality_probed_at" json:"quality_probed_at"`
+	QualityOk               *bool              `db:"quality_ok" json:"quality_ok"`
+	QualityLatencyMs        *int64             `db:"quality_latency_ms" json:"quality_latency_ms"`
+	QualityErrorClass       string             `db:"quality_error_class" json:"quality_error_class"`
+	QualityGrade            *string            `db:"quality_grade" json:"quality_grade"`
+	QualitySource           *string            `db:"quality_source" json:"quality_source"`
+	QualitySuccessAt        pgtype.Timestamptz `db:"quality_success_at" json:"quality_success_at"`
+	QualitySuccessLatencyMs *int64             `db:"quality_success_latency_ms" json:"quality_success_latency_ms"`
+	CreatedAt               pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	UpdatedAt               pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
 }
 
 func (q *Queries) UpdateProxy(ctx context.Context, arg UpdateProxyParams) (UpdateProxyRow, error) {
@@ -542,6 +549,14 @@ func (q *Queries) UpdateProxy(ctx context.Context, arg UpdateProxyParams) (Updat
 		&i.GroupID,
 		&i.Status,
 		&i.LastCheckAt,
+		&i.QualityProbedAt,
+		&i.QualityOk,
+		&i.QualityLatencyMs,
+		&i.QualityErrorClass,
+		&i.QualityGrade,
+		&i.QualitySource,
+		&i.QualitySuccessAt,
+		&i.QualitySuccessLatencyMs,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)

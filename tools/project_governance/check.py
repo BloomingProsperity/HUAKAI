@@ -24,9 +24,9 @@ FRONTEND_CAPABILITY_STATUSES = (
 )
 EXPECTED_FRONTEND_CAPABILITY_COUNTS = {
     "已有可接": 57,
-    "已有但未接 UI": 65,
+    "已有但未接 UI": 66,
     "后端部分具备": 13,
-    "前后端都缺": 10,
+    "前后端都缺": 9,
     "已领先": 12,
     "不适用": 2,
 }

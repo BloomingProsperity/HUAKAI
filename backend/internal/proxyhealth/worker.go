@@ -33,15 +33,27 @@ type Lister interface {
 	List(ctx context.Context) ([]ProxyTarget, error)
 }
 
-// Prober 探测单个代理是否存活。
+// Observation 是一次探测的不含凭据结果。
+type Observation struct {
+	Reachable  bool
+	LatencyMS  int64
+	ErrorClass string
+}
+
+// Prober 探测单个代理是否打通。
 type Prober interface {
-	Probe(ctx context.Context, t ProxyTarget) bool
+	Probe(ctx context.Context, t ProxyTarget) Observation
 }
 
 // StatusStore 写代理探测结果。
 type StatusStore interface {
 	Touch(ctx context.Context, tenantID, id int64, expectedStatus string) (bool, error)
 	SetStatus(ctx context.Context, tenantID, id int64, expectedStatus, status string) (bool, error)
+}
+
+// QualityWriter 把周期探测回写权威快照。未实现时仍可做存活迟滞。
+type QualityWriter interface {
+	RecordQuality(ctx context.Context, tenantID, id int64, obs Observation) (bool, error)
 }
 
 type counters struct{ fails, successes int }
@@ -209,13 +221,30 @@ func (w *Worker) tick(ctx context.Context) {
 		return
 	}
 	for _, row := range rows {
-		ok := w.prober.Probe(ctx, row)
+		obs := Observation{}
+		if w.prober != nil {
+			obs = w.prober.Probe(ctx, row)
+		}
+		if w.prober != nil {
+			if qw, ok := w.store.(QualityWriter); ok {
+				if _, recErr := qw.RecordQuality(ctx, row.TenantID, row.ID, obs); recErr != nil {
+					w.logger.Warn("proxyhealth: 写质量快照失败", "id", row.ID, "err", recErr)
+				}
+			}
+		}
 		c := w.state[row.ID]
 		if c == nil {
 			c = &counters{}
 			w.state[row.ID] = c
 		}
-		newStatus := decideStatus(row.Status, ok, c)
+		// 配置面拒绝（不安全主机）记差档，但不把线路标 dead。
+		if obs.ErrorClass == ErrClassUnsafeProxyHost {
+			if _, touchErr := w.store.Touch(ctx, row.TenantID, row.ID, row.Status); touchErr != nil {
+				w.logger.Warn("proxyhealth: touch 失败", "id", row.ID, "err", touchErr)
+			}
+			continue
+		}
+		newStatus := decideStatus(row.Status, obs.Reachable, c)
 		if newStatus == "" {
 			updated, touchErr := w.store.Touch(ctx, row.TenantID, row.ID, row.Status)
 			if touchErr != nil {

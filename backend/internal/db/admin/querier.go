@@ -128,7 +128,7 @@ type Querier interface {
 	InsertAdminToken(ctx context.Context, arg InsertAdminTokenParams) (int64, error)
 	InsertProvider(ctx context.Context, arg InsertProviderParams) (InsertProviderRow, error)
 	InsertProviderAccountRaw(ctx context.Context, arg InsertProviderAccountRawParams) (int64, error)
-	// Phase 3 health check worker 用 (选 active 但 last_check_at 老的 ping)。
+	// 周期探活候选：未删除且仍为 active 的线路。与 CRUD 分文件以免生成码超预算。
 	ListActiveProxiesByTenant(ctx context.Context, tenantID int64) ([]ListActiveProxiesByTenantRow, error)
 	// Drift worker 用; 只取 status='active' 且未软删。
 	ListActiveTLSFingerprintProfilesByTenant(ctx context.Context, tenantID int64) ([]ListActiveTLSFingerprintProfilesByTenantRow, error)
@@ -171,6 +171,7 @@ type Querier interface {
 	// get filtered at the SQL layer — no app-side check required.
 	LookupAdminTokenByPrefix(ctx context.Context, keyPrefix string) ([]LookupAdminTokenByPrefixRow, error)
 	RecordProviderAccountProbe(ctx context.Context, arg RecordProviderAccountProbeParams) (int64, error)
+	RecordProxyQuality(ctx context.Context, arg RecordProxyQualityParams) (RecordProxyQualityRow, error)
 	// Soft-revoke an admin token. Tenant-bound revocation isn't enforced here
 	// because admin_tokens has no tenant ownership for platform_admin rows;
 	// the handler-side RBAC check decides whether the caller can revoke.
