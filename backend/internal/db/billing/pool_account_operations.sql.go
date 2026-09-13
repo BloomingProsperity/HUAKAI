@@ -62,6 +62,71 @@ func (q *Queries) DecrementInFlightCount(ctx context.Context, id int64) error {
 	return err
 }
 
+const getAccountForRefreshByID = `-- name: GetAccountForRefreshByID :one
+SELECT
+    pa.id,
+    pa.tenant_id,
+    pa.provider_id,
+    p.code AS vendor_name,
+    pa.expires_at,
+    pa.enabled,
+    pa.health_state,
+    (
+        pa.enabled
+        AND pa.health_state <> 'revoked'
+        AND (
+            pa.health_state = 'healthy'
+            OR (
+                pa.health_state IN ('throttled', 'cooldown')
+                AND pa.health_state_until IS NOT NULL
+                AND pa.health_state_until <= NOW()
+            )
+        )
+    )::boolean AS refreshable
+FROM provider_accounts pa
+JOIN providers p
+  ON p.id = pa.provider_id
+ AND p.tenant_id = pa.tenant_id
+ AND p.deleted_at IS NULL
+WHERE pa.id = $1::bigint
+  AND pa.tenant_id = $2::bigint
+  AND pa.deleted_at IS NULL
+`
+
+type GetAccountForRefreshByIDParams struct {
+	ID       int64 `db:"id" json:"id"`
+	TenantID int64 `db:"tenant_id" json:"tenant_id"`
+}
+
+type GetAccountForRefreshByIDRow struct {
+	ID          int64              `db:"id" json:"id"`
+	TenantID    int64              `db:"tenant_id" json:"tenant_id"`
+	ProviderID  int64              `db:"provider_id" json:"provider_id"`
+	VendorName  string             `db:"vendor_name" json:"vendor_name"`
+	ExpiresAt   pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
+	Enabled     bool               `db:"enabled" json:"enabled"`
+	HealthState string             `db:"health_state" json:"health_state"`
+	Refreshable bool               `db:"refreshable" json:"refreshable"`
+}
+
+// 运营"立刻刷新"按账号取刷新行:与 ListAccountsForRefresh 同一资格谓词(未删除、启用、非 revoked、
+// 健康或冷却已到期),但不看到期时间;refreshable=false 时调用方按 not_applicable / state_not_allowed 报告。
+func (q *Queries) GetAccountForRefreshByID(ctx context.Context, arg GetAccountForRefreshByIDParams) (GetAccountForRefreshByIDRow, error) {
+	row := q.db.QueryRow(ctx, getAccountForRefreshByID, arg.ID, arg.TenantID)
+	var i GetAccountForRefreshByIDRow
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.ProviderID,
+		&i.VendorName,
+		&i.ExpiresAt,
+		&i.Enabled,
+		&i.HealthState,
+		&i.Refreshable,
+	)
+	return i, err
+}
+
 const getAccountForRevalidation = `-- name: GetAccountForRevalidation :one
 SELECT
     id,

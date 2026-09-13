@@ -91,6 +91,13 @@ func (s postgresAccountCredentialRefreshStore) WithRefreshTransaction(ctx contex
 	})
 }
 
+func (s postgresAccountCredentialRefreshStore) InspectRefreshMode(ctx context.Context, tenantID, accountID int64) (string, string, error) {
+	if s.store == nil {
+		return "", "", errors.New("credentialworker: account credential store missing")
+	}
+	return s.store.InspectRefreshMode(ctx, tenantID, accountID)
+}
+
 func (s postgresAccountCredentialRefreshStore) LoadForRefresh(ctx context.Context, accountID int64) (credentialstore.CredentialRecord, error) {
 	if s.store == nil {
 		return credentialstore.CredentialRecord{}, errors.New("credentialworker: account credential store missing")

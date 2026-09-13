@@ -12700,6 +12700,89 @@ paths:
         "502": { description: 上游模型目录失败或响应无效。 }
         "503": { $ref: '#/components/responses/ServiceBusy' }
 
+  /admin/v1/provider-accounts/bulk:
+    post:
+      tags: [admin-accounts]
+      summary: Bulk operate on explicitly selected provider accounts with per-item results
+      operationId: bulkProviderAccountsByID
+      x-huakai-required-role: platform_admin_or_tenant_operator
+      x-huakai-spec-source:
+        - backend/internal/accountbulkhttp/handler.go
+        - backend/internal/accountbulkhttp/store_postgres.go
+        - backend/internal/credentialworker/refresh_now.go
+        - backend/cmd/gateway/routes.go
+      description: |
+        Applies one action to an explicit list of provider account ids (this is
+        the "selected ids" entry; filtering by tag stays on bulk-by-tag and the
+        two are never mixed). Actions: set_enabled, set_priority,
+        set_static_weight, clear_rate_limit, recover, refresh_credential,
+        move_channel. Every account is processed independently in its own short
+        transaction; a failure never rolls back accounts that already succeeded
+        (succeeded_not_rolled_back is always true). Duplicate ids are removed
+        before execution (duplicate_ids_removed reports how many). Ids that do
+        not exist, belong to another tenant or are soft-deleted all report the
+        same not_found item code. Accounts already in the requested state report
+        skipped/already_in_desired_state. dry_run returns would_apply /
+        would_reject per item without writing anything.
+        refresh_credential runs through the same admission chain as the
+        background refresh scheduler (per-account slot, provider endpoint and
+        global storm budgets, refresh audit) with a bounded worker pool; a slot
+        held elsewhere reports deferred/refresh_in_progress, an exhausted budget
+        reports deferred/refresh_deferred, static credentials (API keys) report
+        skipped/refresh_not_applicable, and the per-request limit is lower (50).
+        move_channel validates that the target channel belongs to the same
+        tenant and evaluates mixed-channel risk against the accounts already in
+        the target channel; a high-risk move fails with
+        mixed_risk_confirmation_required (report in detail) unless
+        confirm_mixed_risk is true. Sticky bindings to a disabled or moved
+        account are broken by the selector on the next request.
+        Scope: tenant_operator is locked to its authenticated tenant;
+        platform_admin must pass a positive tenant_id. One batch-level audit
+        event plus one per-item audit event are written for real executions.
+        The whole batch is bounded by a timeout; items not started when it
+        expires report cancelled/batch_timeout and should be resubmitted.
+      parameters:
+        - name: tenant_id
+          in: query
+          required: false
+          description: Required for platform_admin; tenant_operator may only pass its own tenant.
+          schema: { type: integer, format: int64, minimum: 1 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProviderAccountBulkByIDRequest' }
+      responses:
+        '200':
+          description: Every item succeeded or was skipped.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProviderAccountBulkByIDResponse' }
+        '207':
+          description: Completed with failed, deferred or cancelled items; succeeded items remain committed.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProviderAccountBulkByIDResponse' }
+        '400':
+          description: Invalid body, action, parameters, ids, or too many ids.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '401':
+          description: Missing or invalid admin credential.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '403':
+          description: Tenant operator attempted another tenant scope.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '503':
+          description: Bulk operations not configured.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
   /admin/v1/provider-accounts/bulk-by-tag:
     post:
       tags: [admin-accounts]
@@ -20777,6 +20860,65 @@ components:
             committed_attempts: { type: integer }
             notes: { type: array, items: { type: string } }
         totals: { $ref: '#/components/schemas/RequestTraceUsage' }
+    ProviderAccountBulkByIDRequest:
+      type: object
+      additionalProperties: false
+      required: [ids, action]
+      properties:
+        ids:
+          type: array
+          minItems: 1
+          maxItems: 200
+          items: { type: integer, format: int64, minimum: 1 }
+          description: Explicitly selected provider account ids (duplicates removed). refresh_credential accepts at most 50.
+        action:
+          type: string
+          enum: [set_enabled, set_priority, set_static_weight, clear_rate_limit, recover, refresh_credential, move_channel]
+        enabled: { type: boolean, description: Required for set_enabled. }
+        priority: { type: integer, format: int32, description: Required for set_priority. }
+        static_weight: { type: integer, format: int32, minimum: 0, description: Required for set_static_weight. }
+        channel_id: { type: integer, format: int64, minimum: 1, description: Required for move_channel; must belong to the same tenant. }
+        confirm_mixed_risk: { type: boolean, description: Acknowledge a high mixed-channel risk report for move_channel. }
+        reason: { type: string, maxLength: 512, description: Free-text operator reason recorded on the batch and item audit events. }
+        dry_run: { type: boolean, description: Preview only; nothing is written and no audit events are recorded. }
+    ProviderAccountBulkByIDResponse:
+      type: object
+      additionalProperties: false
+      required: [action, dry_run, tenant_id, total, succeeded, skipped, deferred, failed, cancelled, partial_success, succeeded_ids, failed_ids, succeeded_not_rolled_back, duplicate_ids_removed, results]
+      properties:
+        action: { type: string }
+        dry_run: { type: boolean }
+        tenant_id: { type: integer, format: int64 }
+        total: { type: integer }
+        succeeded: { type: integer }
+        skipped: { type: integer }
+        deferred: { type: integer }
+        failed: { type: integer }
+        cancelled: { type: integer }
+        partial_success: { type: boolean, description: True when some items succeeded and others failed, were deferred or cancelled. }
+        succeeded_ids: { type: array, items: { type: integer, format: int64 } }
+        failed_ids: { type: array, items: { type: integer, format: int64 }, description: Failed and cancelled ids - resubmit exactly these. }
+        succeeded_not_rolled_back: { type: boolean, description: Always true - there is no cross-account transaction. }
+        duplicate_ids_removed: { type: integer }
+        batch_audit_id: { type: integer, format: int64, description: Batch-level audit event id (absent for dry_run). }
+        results:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [id, status, retryable]
+            properties:
+              id: { type: integer, format: int64 }
+              status: { type: string, enum: [succeeded, skipped, deferred, failed, cancelled, would_apply, would_reject] }
+              code:
+                type: string
+                enum: [not_found, already_in_desired_state, state_not_allowed, refresh_in_progress, refresh_deferred, refresh_not_applicable, refresh_failed, channel_not_found, mixed_risk_confirmation_required, partial_recovery, store_error, batch_timeout, dependency_not_configured, already_in_channel, invalid_action]
+              message: { type: string }
+              retryable: { type: boolean }
+              detail:
+                type: object
+                additionalProperties: true
+                description: Non-secret structured detail (mixed-risk report, refresh scope/outcome, before/after snapshot).
     ErrorResponse:
       type: object
       additionalProperties: false

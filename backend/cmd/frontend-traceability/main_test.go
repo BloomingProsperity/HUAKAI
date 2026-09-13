@@ -108,6 +108,7 @@ func TestFrontendVisibleAdminOperationsDeclareRuntimeRoles(t *testing.T) {
 		"adminTenantUsageCacheComposition":   "platform_admin_or_tenant_operator",
 		"adminPoolHealthSummary":             "platform_admin_or_tenant_operator",
 		"adminRequestTrace":                  "platform_admin_or_tenant_operator",
+		"bulkProviderAccountsByID":           "platform_admin_or_tenant_operator",
 		"adminRequestTraceSlashed":           "platform_admin_or_tenant_operator",
 		"getMyRequestTrace":                  "session",
 		"getMyRequestTraceSlashed":           "session",

@@ -176,3 +176,35 @@ WHERE tenant_id = $1
   AND health_state <> 'healthy'
   AND (health_state_until IS NULL OR health_state_until > NOW())
 GROUP BY health_state;
+
+-- name: GetAccountForRefreshByID :one
+-- 运营"立刻刷新"按账号取刷新行:与 ListAccountsForRefresh 同一资格谓词(未删除、启用、非 revoked、
+-- 健康或冷却已到期),但不看到期时间;refreshable=false 时调用方按 not_applicable / state_not_allowed 报告。
+SELECT
+    pa.id,
+    pa.tenant_id,
+    pa.provider_id,
+    p.code AS vendor_name,
+    pa.expires_at,
+    pa.enabled,
+    pa.health_state,
+    (
+        pa.enabled
+        AND pa.health_state <> 'revoked'
+        AND (
+            pa.health_state = 'healthy'
+            OR (
+                pa.health_state IN ('throttled', 'cooldown')
+                AND pa.health_state_until IS NOT NULL
+                AND pa.health_state_until <= NOW()
+            )
+        )
+    )::boolean AS refreshable
+FROM provider_accounts pa
+JOIN providers p
+  ON p.id = pa.provider_id
+ AND p.tenant_id = pa.tenant_id
+ AND p.deleted_at IS NULL
+WHERE pa.id = sqlc.arg(id)::bigint
+  AND pa.tenant_id = sqlc.arg(tenant_id)::bigint
+  AND pa.deleted_at IS NULL;

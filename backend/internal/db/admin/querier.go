@@ -98,6 +98,8 @@ type Querier interface {
 	// Fetch a single admin token's metadata (no key_hash) for revoke
 	// pre-checks and idempotency decisions. Soft-deleted rows are excluded.
 	GetAdminTokenByID(ctx context.Context, id int64) (GetAdminTokenByIDRow, error)
+	// 批量改渠道的目标渠道校验:必须属于同一租户且未删除;返回所属池组与启用态供审计与风险提示。
+	GetChannelForBulkMove(ctx context.Context, arg GetChannelForBulkMoveParams) (GetChannelForBulkMoveRow, error)
 	GetChannelTestTemplate(ctx context.Context, arg GetChannelTestTemplateParams) (ChannelTestTemplate, error)
 	// 按池健康投影的租户存在性门:部署者显式指定的 tenant_id 指向不存在或已软删的租户时
 	// 必须返回可辨识的 404,而不是把它当成空租户放行成空投影。租户 status 不影响只读投影,不取。
@@ -150,6 +152,9 @@ type Querier interface {
 	// 跨租户访问被 WHERE 子句拒绝在 SQL 层。
 	// admin 后台列表; 返回该 tenant 下所有未软删行 (含 disabled / drift_detected)。
 	ListTLSFingerprintProfilesByTenant(ctx context.Context, tenantID int64) ([]ListTLSFingerprintProfilesByTenantRow, error)
+	// 批量运维逐项事务:按 (id, tenant) 锁定未删除账号并读取将改字段的当前值,用于"已达期望态 → skipped"
+	// 判定与审计 before/after;他租户或已删除 → no rows(调用方统一映射为 not_found,不区分)。
+	LockProviderAccountForBulk(ctx context.Context, arg LockProviderAccountForBulkParams) (LockProviderAccountForBulkRow, error)
 	// Admin token queries.
 	// This file is consumed only by internal/admin and never by
 	// internal/auth (the inbound customer resolver). Queries
@@ -211,6 +216,8 @@ type Querier interface {
 	UpdateChannel(ctx context.Context, arg UpdateChannelParams) (UpdateChannelRow, error)
 	UpdateChannelTestTemplate(ctx context.Context, arg UpdateChannelTestTemplateParams) (ChannelTestTemplate, error)
 	UpdateProvider(ctx context.Context, arg UpdateProviderParams) (UpdateProviderRow, error)
+	// 批量改渠道:只改 channel_id;调用方已在同一事务内锁定账号、校验目标渠道并完成混合风险判定。
+	UpdateProviderAccountChannel(ctx context.Context, arg UpdateProviderAccountChannelParams) (int64, error)
 	UpdateProviderAccountEnabled(ctx context.Context, arg UpdateProviderAccountEnabledParams) error
 	// 绑定/解绑 provider account 的 TLS 指纹 profile。profile_id 为 NULL → 解绑回内置默认;
 	// 非 NULL → 绑定(DB 触发器 0038 校验 profile 属同租户,跨租户绑定被拒)。

@@ -300,17 +300,29 @@ func (s *Scheduler) validate() error {
 }
 
 func (s *Scheduler) processAccount(ctx context.Context, account dbbilling.ListAccountsForRefreshRow) error {
+	_, err := s.admitAndRefresh(ctx, account)
+	return err
+}
+
+// admitAndRefresh 是后台调度与运营"立刻刷新"共用的唯一准入 + 刷新内核:三个 scope 依次放行后刷新,
+// 每一步的结论都写入刷新审计。返回的 RefreshNowOutcome 让同步调用方区分"已刷新 / 被准入推迟 / 失败",
+// error 语义与既有 processAccount 完全一致(准入推迟不算错误)。
+func (s *Scheduler) admitAndRefresh(ctx context.Context, account dbbilling.ListAccountsForRefreshRow) (RefreshNowOutcome, error) {
 	// Scope 1(account):持久化的 DB 并发槽位;在本次尝试之后释放。
 	release, outcome, err := s.acquirer.Acquire(ctx, account.TenantID, account.ID)
 	if err != nil {
 		_ = s.recordAudit(ctx, account, auth.OutcomeStormBudgetExhausted, "account", err)
-		return err
+		return RefreshNowOutcome{Status: RefreshNowFailed, Scope: "account", Detail: err.Error()}, err
 	}
 	if outcome != "" || release == nil {
 		if outcome == "" {
 			outcome = auth.OutcomeStormBudgetExhausted
 		}
-		return s.recordAudit(ctx, account, outcome, "account", nil)
+		status := RefreshNowDeferred
+		if outcome == auth.OutcomeRefreshLockHeld {
+			status = RefreshNowInProgress
+		}
+		return RefreshNowOutcome{Status: status, Scope: "account", Detail: string(outcome)}, s.recordAudit(ctx, account, outcome, "account", nil)
 	}
 	defer release()
 	ctx = auth.WithRefreshAccountLease(ctx, account.TenantID, account.ID)
@@ -322,34 +334,40 @@ func (s *Scheduler) processAccount(ctx context.Context, account dbbilling.ListAc
 	endpointKey := normalizeProviderName(account.VendorName)
 	endpointRefund, outcome, err := s.acquirer.AcquireProviderEndpoint(ctx, account.TenantID, endpointKey, "")
 	if err != nil {
-		return errors.Join(err, s.recordAudit(ctx, account, auth.OutcomeStormBudgetExhausted, "provider_endpoint", err))
+		return RefreshNowOutcome{Status: RefreshNowFailed, Scope: "provider_endpoint", Detail: err.Error()},
+			errors.Join(err, s.recordAudit(ctx, account, auth.OutcomeStormBudgetExhausted, "provider_endpoint", err))
 	}
 	if outcome != "" {
-		return s.recordAudit(ctx, account, outcome, "provider_endpoint", nil)
+		return RefreshNowOutcome{Status: RefreshNowDeferred, Scope: "provider_endpoint", Detail: string(outcome)},
+			s.recordAudit(ctx, account, outcome, "provider_endpoint", nil)
 	}
 
 	// Scope 3(global):生产接线跨副本共享的全局速率预算，作为最后兜底上限。
 	_, outcome, err = s.acquirer.AcquireGlobal(ctx, account.TenantID)
 	if err != nil {
 		endpointRefund()
-		return errors.Join(err, s.recordAudit(ctx, account, auth.OutcomeStormBudgetExhausted, "global", err))
+		return RefreshNowOutcome{Status: RefreshNowFailed, Scope: "global", Detail: err.Error()},
+			errors.Join(err, s.recordAudit(ctx, account, auth.OutcomeStormBudgetExhausted, "global", err))
 	}
 	if outcome != "" {
 		// 退还 endpoint token:本次尝试从未运行,因此它不能消耗 endpoint 预算
 		// (A07:只在下游 scope 拒绝时退还,绝不在刷新失败时退还)。
 		endpointRefund()
-		return s.recordAudit(ctx, account, outcome, "global", nil)
+		return RefreshNowOutcome{Status: RefreshNowDeferred, Scope: "global", Detail: string(outcome)},
+			s.recordAudit(ctx, account, outcome, "global", nil)
 	}
 
 	// 三个 scope 全部放行。无论刷新结果如何,endpoint/global token 都保持被消耗状态
 	// ——一次失败的尝试绝不能重新打开 storm 窗口。
 	if err := s.refreshWithBackoff(ctx, account); err != nil {
 		if outcome := auth.RefreshAuditOutcomeFromError(err); outcome != "" {
-			return errors.Join(err, s.recordAuditString(ctx, account, outcome, "", err))
+			return RefreshNowOutcome{Status: RefreshNowFailed, Scope: "refresh", Detail: outcome},
+				errors.Join(err, s.recordAuditString(ctx, account, outcome, "", err))
 		}
-		return errors.Join(err, s.recordAudit(ctx, account, auth.OutcomePermanentDisable, "", err))
+		return RefreshNowOutcome{Status: RefreshNowFailed, Scope: "refresh", Detail: string(auth.OutcomePermanentDisable)},
+			errors.Join(err, s.recordAudit(ctx, account, auth.OutcomePermanentDisable, "", err))
 	}
-	return s.recordAudit(ctx, account, auth.OutcomeRefreshSucceeded, "", nil)
+	return RefreshNowOutcome{Status: RefreshNowRefreshed}, s.recordAudit(ctx, account, auth.OutcomeRefreshSucceeded, "", nil)
 }
 
 func (s *Scheduler) refreshWithBackoff(ctx context.Context, account dbbilling.ListAccountsForRefreshRow) error {
