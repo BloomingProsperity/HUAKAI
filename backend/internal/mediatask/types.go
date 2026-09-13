@@ -31,6 +31,7 @@ const (
 var (
 	ErrDisabled                         = errors.New("mediatask: disabled")
 	ErrInvalidInput                     = errors.New("mediatask: invalid input")
+	ErrContentPolicy                    = errors.New("mediatask: content policy violation")
 	ErrRequestIDConflict                = errors.New("mediatask: request id conflict")
 	ErrNotFound                         = errors.New("mediatask: not found")
 	ErrNoActiveAPIKey                   = errors.New("mediatask: no active api key for user")

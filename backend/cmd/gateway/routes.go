@@ -701,6 +701,7 @@ func embeddingsHandlerDeps(d *deps) embeddingshttp.Deps {
 		Feedback:                    d.upstreamFeedback,
 		RetryBudget:                 d.retryBudget,
 		SameAccountTransientRetries: sameAccountTransientRetriesFn(d),
+		ModerationScreener:          moderationScreener(d),
 	}
 }
 
@@ -726,7 +727,8 @@ func completionsHandlerDeps(d *deps) completionshttp.Deps {
 		RetryBudget:                 d.retryBudget,
 		SameAccountTransientRetries: sameAccountTransientRetriesFn(d),
 		// 流式交付后 settle 失败的 durable 兜底队列，与 chat 路径同一注入(S1-2/S1-3)。
-		SettleRecoveryDLQ: d.dlqService,
+		SettleRecoveryDLQ:  d.dlqService,
+		ModerationScreener: moderationScreener(d),
 	}
 }
 
@@ -752,6 +754,7 @@ func rerankHandlerDeps(d *deps) rerankhttp.Deps {
 		Feedback:                    d.upstreamFeedback,
 		RetryBudget:                 d.retryBudget,
 		SameAccountTransientRetries: sameAccountTransientRetriesFn(d),
+		ModerationScreener:          moderationScreener(d),
 	}
 }
 
@@ -780,6 +783,7 @@ func imageHandlerDeps(d *deps) imageshttp.Deps {
 		SameAccountTransientRetries: sameAccountTransientRetriesFn(d),
 		// 图片生成强制 buffered、可达数十秒;反代前设 HUAKAI_NONSTREAM_KEEPALIVE_INTERVAL 保活。默认 0=关。
 		NonStreamKeepAliveInterval: streamDurationEnv("HUAKAI_NONSTREAM_KEEPALIVE_INTERVAL", 0),
+		ModerationScreener:         moderationScreener(d),
 	}
 }
 
@@ -805,6 +809,7 @@ func audioHandlerDeps(d *deps) audiohttp.Deps {
 		Feedback:                    d.upstreamFeedback,
 		RetryBudget:                 d.retryBudget,
 		SameAccountTransientRetries: sameAccountTransientRetriesFn(d),
+		ModerationScreener:          moderationScreener(d),
 	}
 }
 
@@ -825,6 +830,7 @@ func videoHandlerDeps(d *deps) videohttp.Deps {
 	return videohttp.Deps{
 		Auth: d.inboundAuth, Registry: d.modelRegistry, Router: d.routePlanner,
 		Selector: d.selector, CredentialVault: d.credentialVault, Service: d.mediaTaskService,
+		ModerationScreener: moderationScreener(d),
 	}
 }
 

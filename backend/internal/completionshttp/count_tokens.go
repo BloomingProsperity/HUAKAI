@@ -13,6 +13,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/bindingfallback"
 	fallbackexec "github.com/BloomingProsperity/HUAKAI/internal/bindingfallback/executor"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
+	"github.com/BloomingProsperity/HUAKAI/internal/moderation"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/registrydefault"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
@@ -58,6 +59,9 @@ func NewCountTokensHandler(d Deps) http.HandlerFunc {
 		}
 		if ex.resolved.ProtocolFamily == registrydefault.ProtocolAnthropicClaudeSession {
 			writeJSONError(w, http.StatusNotImplemented, "count_tokens_not_supported_for_protocol", "count_tokens is not enabled for Claude session serving")
+			return
+		}
+		if !ex.screenInbound(w, moderation.ProtocolAnthropicMessages, body) {
 			return
 		}
 		ex.runCountTokens(w, req.Model)

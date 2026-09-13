@@ -204,6 +204,8 @@ func parseID(w http.ResponseWriter, raw string) (int64, bool) {
 
 func writeServiceError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, mediatask.ErrContentPolicy):
+		writeError(w, http.StatusForbidden, clienterr.CodeContentPolicyViolation, clienterr.MessageFor(clienterr.CodeContentPolicyViolation))
 	case errors.Is(err, mediatask.ErrDisabled), errors.Is(err, mediatask.ErrNotFound):
 		writeError(w, http.StatusNotFound, "media_task_not_found", "media task is not available")
 	case errors.Is(err, mediatask.ErrInvalidInput):

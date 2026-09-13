@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/moderation"
 	"github.com/BloomingProsperity/HUAKAI/internal/moderationhttp"
@@ -24,11 +25,18 @@ func mountModerationAdminRoutes(r chi.Router, d *deps) {
 }
 
 func moderationScreener(d *deps) moderation.Screener {
-	if !contentModerationRuntimeEnabled() || d == nil || d.pgPool == nil {
+	if d == nil {
 		return nil
 	}
-	store := moderation.NewSQLStoreWithPool(d.pgPool)
-	configStore := moderation.NewExternalSettingsConfigStore(store, d.platformSettings)
+	return newRuntimeContentScreener(d.pgPool, d.platformSettings)
+}
+
+func newRuntimeContentScreener(pgPool *pgxpool.Pool, settings moderation.PlatformSettingGetter) moderation.Screener {
+	if !contentModerationRuntimeEnabled() || pgPool == nil {
+		return nil
+	}
+	store := moderation.NewSQLStoreWithPool(pgPool)
+	configStore := moderation.NewExternalSettingsConfigStore(store, settings)
 	return moderation.NewScreener(moderation.ScreenerDeps{
 		Config:         configStore,
 		Keywords:       store,

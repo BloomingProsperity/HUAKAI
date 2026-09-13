@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/moderation"
 )
 
 type Store interface {
@@ -27,10 +29,18 @@ type Service struct {
 	store    Store
 	configs  ConfigSource
 	registry ProviderRegistry
+	screener moderation.Screener
 }
 
 func NewService(store Store, configs ConfigSource, registry ProviderRegistry) *Service {
 	return &Service{store: store, configs: configs, registry: registry}
+}
+
+func (s *Service) WithContentScreener(screener moderation.Screener) *Service {
+	if s != nil {
+		s.screener = screener
+	}
+	return s
 }
 
 func (s *Service) Submit(ctx context.Context, tenantID, userID int64, input SubmitInput) (Task, error) {
@@ -50,6 +60,9 @@ func (s *Service) Submit(ctx context.Context, tenantID, userID int64, input Subm
 	}
 	if isDurablyBoundVideoProvider(input.Provider) && !hasDurableSubmitBinding(input) {
 		return Task{}, fmt.Errorf("%w: durable video provider requires exact key, pool, account, protocol, model and route binding", ErrInvalidInput)
+	}
+	if err := s.screenSubmit(ctx, tenantID, userID, input); err != nil {
+		return Task{}, err
 	}
 	if _, ok, err := s.lookupProvider(ctx, input.Provider); err != nil || !ok {
 		if err != nil {
@@ -220,4 +233,21 @@ func MatchesSubmission(task Task, input SubmitInput) bool {
 		task.Provider == strings.TrimSpace(input.Provider) &&
 		(input.RequestedModel == "" || task.RequestedModel == strings.TrimSpace(input.RequestedModel)) &&
 		jsonCanonicalEqual(task.InputParams, input.InputParams)
+}
+
+func (s *Service) screenSubmit(ctx context.Context, tenantID, userID int64, input SubmitInput) error {
+	if s == nil {
+		return nil
+	}
+	if err := moderation.ScreenBody(ctx, s.screener, moderation.ScreenRequest{
+		TenantID:       tenantID,
+		UserID:         userID,
+		APIKeyID:       input.APIKeyID,
+		RequestID:      input.RequestID,
+		ClientProtocol: moderation.ProtocolMediaTask,
+		Body:           input.InputParams,
+	}); err != nil {
+		return ErrContentPolicy
+	}
+	return nil
 }

@@ -22,6 +22,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/mediatask"
 	"github.com/BloomingProsperity/HUAKAI/internal/modality"
+	"github.com/BloomingProsperity/HUAKAI/internal/moderation"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
@@ -48,12 +49,13 @@ type mediaService interface {
 }
 
 type Deps struct {
-	Auth            authResolver
-	Registry        registry.Registry
-	Router          router.Router
-	Selector        pool.Selector
-	CredentialVault provider.CredentialVault
-	Service         mediaService
+	Auth               authResolver
+	Registry           registry.Registry
+	Router             router.Router
+	Selector           pool.Selector
+	CredentialVault    provider.CredentialVault
+	Service            mediaService
+	ModerationScreener moderation.Screener
 }
 
 type videoRequest struct {
@@ -134,6 +136,12 @@ func newSubmitHandler(deps Deps, target endpoint) http.HandlerFunc {
 		}
 		if !apikeymodelallow.AllowsCSV(identity.AllowedModels, request.Model) {
 			writeError(w, http.StatusForbidden, "model_not_allowed", "api key is not allowed to use this model")
+			return
+		}
+		if !moderation.ApplyHTTP(w, r.Context(), deps.ModerationScreener, moderation.ScreenRequest{
+			TenantID: identity.TenantID, APIKeyID: identity.APIKeyID, UserID: identity.UserID,
+			ClientProtocol: moderation.ProtocolOpenAIVideo, Body: body,
+		}) {
 			return
 		}
 		requestID, ok := publicRequestID(w, r, identity)
@@ -420,6 +428,8 @@ func writeRegistryError(w http.ResponseWriter, err error) {
 
 func writeServiceError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, mediatask.ErrContentPolicy):
+		writeError(w, http.StatusForbidden, clienterr.CodeContentPolicyViolation, clienterr.MessageFor(clienterr.CodeContentPolicyViolation))
 	case errors.Is(err, billing.ErrInsufficientBalance):
 		writeError(w, http.StatusPaymentRequired, "insufficient_balance", "insufficient balance")
 	case errors.Is(err, billing.ErrTenantInactive):

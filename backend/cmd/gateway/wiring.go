@@ -1538,7 +1538,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, logger *zap.Logger, s
 	mediaTaskProviders := mediatask.NewOverlayProviderRegistry(legacyMediaProviders, map[string]mediatask.AsyncMediaProvider{
 		"grok_video": grokVideoProvider, "gemini_video": geminiVideoProvider,
 	})
-	mediaTaskService := mediatask.NewService(mediaTaskStore, mediaTaskConfig, mediaTaskProviders)
+	mediaTaskService := mediatask.NewService(mediaTaskStore, mediaTaskConfig, mediaTaskProviders).WithContentScreener(newRuntimeContentScreener(pgPool, platformSettingsService))
 	// OrphanReporter 把"租约丢失致 providerTaskID 未落库"的孤儿上游任务持久化到 media_task_orphans,
 	// 供对账消费者/运维查处(此前仅日志,易随轮转丢失)。logger 传 nil → 与 worker 同走 slog 默认实例。
 	mediaTaskWorker := mediatask.NewWorker(mediaTaskStore, mediaTaskConfig, mediaTaskProviders, mediatask.WorkerOptions{
