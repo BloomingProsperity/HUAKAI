@@ -11,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"go.uber.org/zap"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/accountbulkhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/accountbundle"
 	"github.com/BloomingProsperity/HUAKAI/internal/accountfphttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/accountprobe"
@@ -39,6 +40,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/claudecookie"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/crssource"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialprojecthttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker"
 	dbmodelroutingadmin "github.com/BloomingProsperity/HUAKAI/internal/db/modelroutingadmin"
 	requesttracedb "github.com/BloomingProsperity/HUAKAI/internal/db/requesttracedb"
 	"github.com/BloomingProsperity/HUAKAI/internal/dlqhttp"
@@ -1046,6 +1048,14 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 			Auth:  d.adminAuth,
 			Store: adminhttp.NewProviderAccountBulkStoreAdapter(d.adminQueries, d.pgPool),
 		})
+		// 按选中 ID 的批量运维(启停 / 优先级 / 权重 / 清限流 / 完整恢复 / 立刻刷新 / 改渠道),逐项部分成功;
+		// 与 bulk-by-tag(筛选模式)分入口。恢复与刷新复用单账号接口的同一原语与后台调度的同一准入链。
+		accountbulkhttp.MountRoutes(r, accountbulkhttp.Deps{
+			Auth:      d.adminAuth,
+			Store:     accountbulkhttp.NewPostgresStore(d.pgPool),
+			Recovery:  provideraccountrecovery.NewService(provideraccountrecovery.NewPostgresStore(d.pgPool), d.channelHealth),
+			Refresher: bulkRefreshService(d.credentialScheduler),
+		})
 		adminhttp.MountProviderAccountUpstreamModelsRoutes(r, adminhttp.UpstreamModelsDeps{
 			Auth:      d.adminAuth,
 			Accounts:  d.adminQueries,
@@ -1278,4 +1288,13 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 			Store: d.responseCache,
 		})
 	})
+}
+
+// bulkRefreshService 把可能为空的凭据调度器包成批量刷新依赖:未装配时返回 nil,让刷新动作报
+// dependency_not_configured 而不是空指针。
+func bulkRefreshService(s *credentialworker.Scheduler) accountbulkhttp.RefreshService {
+	if s == nil {
+		return nil
+	}
+	return s
 }

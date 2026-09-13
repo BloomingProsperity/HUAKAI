@@ -100,6 +100,9 @@ type Querier interface {
 	DeleteExpiredStickyBindings(ctx context.Context) error
 	DeletePool(ctx context.Context, arg DeletePoolParams) (PoolGroup, error)
 	ExpediteAbortLease(ctx context.Context, arg ExpediteAbortLeaseParams) (int64, error)
+	// 运营"立刻刷新"按账号取刷新行:与 ListAccountsForRefresh 同一资格谓词(未删除、启用、非 revoked、
+	// 健康或冷却已到期),但不看到期时间;refreshable=false 时调用方按 not_applicable / state_not_allowed 报告。
+	GetAccountForRefreshByID(ctx context.Context, arg GetAccountForRefreshByIDParams) (GetAccountForRefreshByIDRow, error)
 	GetAccountForRevalidation(ctx context.Context, arg GetAccountForRevalidationParams) (GetAccountForRevalidationRow, error)
 	GetBalanceHoldForUpdate(ctx context.Context, claimID int64) (GetBalanceHoldForUpdateRow, error)
 	// Case C 计费策略租户级设置的增删改查。表见 migration 0046。
