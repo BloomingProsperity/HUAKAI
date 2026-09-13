@@ -182,3 +182,58 @@ func TestRedactModerationExcerpt_TruncatesByUnicodeRune(t *testing.T) {
 		t.Fatal("截断破坏 UTF-8")
 	}
 }
+
+func TestExtractModerationInput_SiblingProtocolsCollectUserText(t *testing.T) {
+	tests := []struct {
+		name     string
+		protocol string
+		body     string
+		wantAll  string
+	}{
+		{name: "completions 字符串", protocol: ProtocolOpenAICompletions, body: `{"prompt":"补全提示"}`, wantAll: "补全提示"},
+		{name: "completions 数组", protocol: ProtocolOpenAICompletions, body: `{"prompt":["第一段","第二段"]}`, wantAll: "第一段\n第二段"},
+		{name: "embeddings", protocol: ProtocolOpenAIEmbeddings, body: `{"input":["向量甲","向量乙"]}`, wantAll: "向量甲\n向量乙"},
+		{name: "rerank", protocol: ProtocolOpenAIRerank, body: `{"query":"检索问","documents":["文档一",{"text":"文档二"}]}`, wantAll: "检索问\n文档一\n文档二"},
+		{name: "images", protocol: ProtocolOpenAIImages, body: `{"prompt":"画一只猫"}`, wantAll: "画一只猫"},
+		{name: "speech", protocol: ProtocolOpenAIAudioSpeech, body: `{"input":"请朗读"}`, wantAll: "请朗读"},
+		{name: "transcript prompt", protocol: ProtocolOpenAIAudioTranscript, body: `{"prompt":"转写提示"}`, wantAll: "转写提示"},
+		{name: "video", protocol: ProtocolOpenAIVideo, body: `{"prompt":"生成夜景"}`, wantAll: "生成夜景"},
+		{name: "media task 信封", protocol: ProtocolMediaTask, body: `{"input_params":{"prompt":"任务提示","title":"曲名","tags":"风格标签"}}`, wantAll: "任务提示\n曲名\n风格标签"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := extractModerationInput(tc.protocol, []byte(tc.body))
+			if err != nil {
+				t.Fatalf("extract: %v", err)
+			}
+			if got.AllText != tc.wantAll {
+				t.Fatalf("AllText=%q want %q", got.AllText, tc.wantAll)
+			}
+		})
+	}
+}
+
+func TestExtractModerationInput_RegisteredEmptyIsNotUnknown(t *testing.T) {
+	// 变异：把已登记无文本当成未知协议，FailClosed 租户会被 403 误伤。
+	tests := []struct {
+		protocol string
+		body     string
+	}{
+		{protocol: ProtocolOpenAIImages, body: `{}`},
+		{protocol: ProtocolOpenAIAudioTranscript, body: `{}`},
+		{protocol: ProtocolMediaTask, body: `{"input_params":{"duration":4}}`},
+		{protocol: ProtocolOpenAIEmbeddings, body: `{"input":[1,2,3]}`},
+	}
+	for _, tc := range tests {
+		got, err := extractModerationInput(tc.protocol, []byte(tc.body))
+		if err != nil {
+			t.Fatalf("protocol=%s err=%v want empty success", tc.protocol, err)
+		}
+		if got.AllText != "" || len(got.ImageURLs) != 0 {
+			t.Fatalf("protocol=%s got=%+v want empty", tc.protocol, got)
+		}
+	}
+	if _, err := extractModerationInput("unknown_sibling", []byte(`{"prompt":"x"}`)); !errors.Is(err, errModerationInput) {
+		t.Fatalf("未知协议 err=%v want errModerationInput", err)
+	}
+}

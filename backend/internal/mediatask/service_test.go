@@ -6,6 +6,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/moderation"
 )
 
 func TestServiceSubmitValidatesAndPassesEstimateToStore(t *testing.T) {
@@ -318,4 +320,40 @@ func (s *fakeStore) CompleteFailure(context.Context, Task, string, string, time.
 
 func (s *fakeStore) ExpireTask(context.Context, Task, string, time.Time) (bool, error) {
 	return false, nil
+}
+
+func TestServiceSubmitBlocksKeywordBeforeStore(t *testing.T) {
+	// 变异：去掉 Submit 前审核会把违规提示写入任务并冻结估价。
+	store := &fakeStore{}
+	svc := NewService(store, StaticConfigSource{Config: testConfig()}, StaticProviderRegistry{"http": NewNoopProvider()}).
+		WithContentScreener(moderation.NewScreener(moderation.ScreenerDeps{
+			Config:   mediaModerationConfig{cfg: moderation.ModerationConfig{Enabled: true, FailClosed: true}},
+			Keywords: mediaModerationKeywords{rules: []moderation.KeywordRule{{ID: 3, Keyword: "forbidden"}}},
+		}))
+	_, err := svc.Submit(context.Background(), 7, 42, SubmitInput{
+		RequestID: "req-mod", TaskType: "image_generation", Provider: "http",
+		InputParams: json.RawMessage(`{"prompt":"forbidden art"}`),
+	})
+	if !errors.Is(err, ErrContentPolicy) {
+		t.Fatalf("Submit err=%v want ErrContentPolicy", err)
+	}
+	if len(store.submitCalls) != 0 {
+		t.Fatalf("违规提示到达 store: %+v", store.submitCalls)
+	}
+}
+
+type mediaModerationConfig struct {
+	cfg moderation.ModerationConfig
+}
+
+func (s mediaModerationConfig) GetConfig(context.Context, int64) (moderation.ModerationConfig, error) {
+	return s.cfg, nil
+}
+
+type mediaModerationKeywords struct {
+	rules []moderation.KeywordRule
+}
+
+func (s mediaModerationKeywords) ListEnabled(context.Context, int64) ([]moderation.KeywordRule, error) {
+	return s.rules, nil
 }

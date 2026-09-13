@@ -10,9 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-chi/chi/v5/middleware"
-	"github.com/google/uuid"
-
 	"github.com/BloomingProsperity/HUAKAI/internal/apikeymodelallow"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/bindingfallback"
@@ -182,11 +179,10 @@ func (relay *countTokensRelay) ServeGeminiCountTokens(w http.ResponseWriter, r *
 		return
 	}
 
-	requestID := uuid.NewString()
-	// 请求 ID 通过显式 ctx 向下游传播(resolveModel/planRoute 均直接收 ctx),
-	// 无需回写 r.Context();原 r = r.WithContext(ctx) 的回写值从未被读取,已移除(SA4006/SA4017)。
-	ctx := context.WithValue(r.Context(), middleware.RequestIDKey, requestID)
-	w.Header().Set(middleware.RequestIDHeader, requestID)
+	ctx, requestID, ok := beginGeminiCountTokens(w, r, relay.d.ModerationScreener, ident, body)
+	if !ok {
+		return
+	}
 
 	resolved, ok := relay.resolveModel(w, ctx, model, ident)
 	if !ok {

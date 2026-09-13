@@ -19,8 +19,10 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
+	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
+	"github.com/BloomingProsperity/HUAKAI/internal/moderation"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/openai"
@@ -725,3 +727,41 @@ func (w *embeddingsPartialWriteResponseWriter) Write(p []byte) (int, error) {
 	return n, w.err
 }
 func (w *embeddingsPartialWriteResponseWriter) Flush() {}
+
+func TestEmbeddingsModerationBlockStopsBeforeReserve(t *testing.T) {
+	// 变异：embeddings 旁路审核会让禁词预扣费。
+	env := newEmbeddingsTestEnv(t, upstreamResponse{status: http.StatusOK, body: `{"data":[{"embedding":[0.1]}],"usage":{"prompt_tokens":1}}`})
+	env.deps.ModerationScreener = moderation.NewScreener(moderation.ScreenerDeps{
+		Config:   moderationConfigStub{cfg: moderation.ModerationConfig{Enabled: true, FailClosed: true}},
+		Keywords: moderationKeywordStub{rules: []moderation.KeywordRule{{ID: 9, Keyword: "forbidden"}}},
+	})
+	rec := env.invoke(t, `{"model":"embed-public","input":"forbidden text"}`)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status=%d body=%s want 403", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), clienterr.CodeContentPolicyViolation) {
+		t.Fatalf("body=%s want content_policy_violation", rec.Body.String())
+	}
+	if got := len(env.claims.reserves); got != 0 {
+		t.Fatalf("reserve calls=%d want 0", got)
+	}
+	if env.transport.called {
+		t.Fatal("禁词仍出站")
+	}
+}
+
+type moderationConfigStub struct {
+	cfg moderation.ModerationConfig
+}
+
+func (s moderationConfigStub) GetConfig(context.Context, int64) (moderation.ModerationConfig, error) {
+	return s.cfg, nil
+}
+
+type moderationKeywordStub struct {
+	rules []moderation.KeywordRule
+}
+
+func (s moderationKeywordStub) ListEnabled(context.Context, int64) ([]moderation.KeywordRule, error) {
+	return s.rules, nil
+}

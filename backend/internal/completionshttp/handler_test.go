@@ -21,6 +21,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
+	"github.com/BloomingProsperity/HUAKAI/internal/moderation"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/registrydefault"
@@ -1066,3 +1067,59 @@ func (w *completionsPartialWriteResponseWriter) Write(p []byte) (int, error) {
 	return n, w.err
 }
 func (w *completionsPartialWriteResponseWriter) Flush() {}
+
+func TestCompletionsModerationBlockStopsBeforeReserve(t *testing.T) {
+	// 变异：删掉 prepareRoute 后的审核闸，禁词会预扣费并出站。
+	env := newCompletionsTestEnv(upstreamResponse{
+		status: http.StatusOK,
+		body:   `{"choices":[{"text":"should not dispatch"}]}`,
+	})
+	env.deps.ModerationScreener = moderation.NewScreener(moderation.ScreenerDeps{
+		Config:   moderationConfigStub{cfg: moderation.ModerationConfig{Enabled: true, FailClosed: true}},
+		Keywords: moderationKeywordStub{rules: []moderation.KeywordRule{{ID: 9, Keyword: "forbidden"}}},
+	})
+	rec := env.invokeCompletions(t, `{"model":"legacy-public","prompt":"please say forbidden"}`)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status=%d body=%s want 403", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), clienterr.CodeContentPolicyViolation) {
+		t.Fatalf("body=%s want content_policy_violation", rec.Body.String())
+	}
+	if got := len(env.claims.reserves); got != 0 {
+		t.Fatalf("reserve calls=%d want 0", got)
+	}
+	if got := env.dispatcher.calls; got != 0 {
+		t.Fatalf("dispatcher calls=%d want 0", got)
+	}
+}
+
+func TestCountTokensModerationBlockStopsBeforeDispatch(t *testing.T) {
+	env := newCompletionsTestEnv(upstreamResponse{status: http.StatusOK, body: `{"input_tokens":1}`})
+	env.deps.ModerationScreener = moderation.NewScreener(moderation.ScreenerDeps{
+		Config:   moderationConfigStub{cfg: moderation.ModerationConfig{Enabled: true, FailClosed: true}},
+		Keywords: moderationKeywordStub{rules: []moderation.KeywordRule{{ID: 9, Keyword: "forbidden"}}},
+	})
+	rec := env.invokeCountTokens(t, `{"model":"claude-public","messages":[{"role":"user","content":"forbidden"}]}`)
+	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), clienterr.CodeContentPolicyViolation) {
+		t.Fatalf("status=%d body=%s want 403 policy", rec.Code, rec.Body.String())
+	}
+	if env.dispatcher.calls != 0 {
+		t.Fatalf("dispatcher calls=%d want 0", env.dispatcher.calls)
+	}
+}
+
+type moderationConfigStub struct {
+	cfg moderation.ModerationConfig
+}
+
+func (s moderationConfigStub) GetConfig(context.Context, int64) (moderation.ModerationConfig, error) {
+	return s.cfg, nil
+}
+
+type moderationKeywordStub struct {
+	rules []moderation.KeywordRule
+}
+
+func (s moderationKeywordStub) ListEnabled(context.Context, int64) ([]moderation.KeywordRule, error) {
+	return s.rules, nil
+}

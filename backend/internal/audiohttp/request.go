@@ -172,3 +172,18 @@ func bodyHash(body []byte) string {
 	sum := sha256.Sum256(body)
 	return hex.EncodeToString(sum[:])
 }
+
+func audioTranscriptScreenBody(req audioRequest) []byte {
+	prompt := ""
+	if req.Fields != nil {
+		prompt = strings.TrimSpace(req.Fields["prompt"])
+	}
+	if prompt == "" {
+		return []byte(`{}`)
+	}
+	raw, err := json.Marshal(map[string]string{"prompt": prompt})
+	if err != nil {
+		return []byte(`{}`)
+	}
+	return raw
+}

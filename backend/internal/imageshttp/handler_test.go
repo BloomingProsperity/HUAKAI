@@ -20,8 +20,10 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
+	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
+	"github.com/BloomingProsperity/HUAKAI/internal/moderation"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/openai"
@@ -986,4 +988,89 @@ func headerContains(h http.Header, key, want string) bool {
 		}
 	}
 	return false
+}
+
+func TestImagesGenerationsModerationBlockStopsBeforeReserve(t *testing.T) {
+	env := newImagesTestEnv(t, imageEndpointGenerations, upstreamResponse{status: http.StatusOK, body: `{"data":[{"url":"https://img.test/a.png"}]}`})
+	env.deps.ModerationScreener = newImageKeywordScreener()
+	rec := env.invoke(t, `{"model":"dall-e-3","prompt":"forbidden mural","n":1}`)
+	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), clienterr.CodeContentPolicyViolation) {
+		t.Fatalf("status=%d body=%s want 403 policy", rec.Code, rec.Body.String())
+	}
+	if len(env.claims.reserves) != 0 || env.transport.called {
+		t.Fatalf("禁词仍预扣费或出站: reserves=%d transport=%v", len(env.claims.reserves), env.transport.called)
+	}
+}
+
+func TestImagesMultipartEditModerationBlockStopsBeforeReserve(t *testing.T) {
+	// 变异：继续把原始 multipart 当 JSON 抽，FailClosed 会误杀或漏扫 form prompt。
+	env := newImagesTestEnv(t, imageEndpointEdits, upstreamResponse{status: http.StatusOK, body: `{"data":[{"url":"https://img.test/a.png"}]}`})
+	env.deps.ModerationScreener = newImageKeywordScreener()
+	ct, body := buildImageEditMultipart(t, map[string]string{"model": "dall-e-2", "prompt": "forbidden mural"}, true)
+	rec := env.invokeRaw(t, ct, body)
+	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), clienterr.CodeContentPolicyViolation) {
+		t.Fatalf("status=%d body=%s want 403 policy", rec.Code, rec.Body.String())
+	}
+	if len(env.claims.reserves) != 0 || env.transport.called {
+		t.Fatalf("multipart 禁词仍预扣费或出站: reserves=%d transport=%v", len(env.claims.reserves), env.transport.called)
+	}
+}
+
+func TestImagesMultipartVariationEmptyPromptPassesScreen(t *testing.T) {
+	// 变异：multipart 变体被当成抽取失败时，Enabled+FailClosed 会 403 且本断言变红。
+	env := newImagesTestEnv(t, imageEndpointVariations, upstreamResponse{status: http.StatusOK, body: `{"data":[{"url":"https://img.test/a.png"}]}`})
+	env.deps.ModerationScreener = newImageKeywordScreener()
+	ct, body := buildImageEditMultipart(t, map[string]string{"model": "dall-e-2"}, true)
+	rec := env.invokeRaw(t, ct, body)
+	if rec.Code == http.StatusForbidden && strings.Contains(rec.Body.String(), clienterr.CodeContentPolicyViolation) {
+		t.Fatalf("无文本变体被策略误杀: %s", rec.Body.String())
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s want 200 for registered empty variation", rec.Code, rec.Body.String())
+	}
+	if len(env.claims.reserves) != 1 {
+		t.Fatalf("reserve calls=%d want 1", len(env.claims.reserves))
+	}
+}
+
+func (e *imagesTestEnv) invokeRaw(t *testing.T, contentType string, body []byte) *httptest.ResponseRecorder {
+	t.Helper()
+	var h http.HandlerFunc
+	switch e.endpoint {
+	case imageEndpointEdits:
+		h = NewEditsHandler(e.deps)
+	case imageEndpointVariations:
+		h = NewVariationsHandler(e.deps)
+	default:
+		h = NewGenerationsHandler(e.deps)
+	}
+	req := httptest.NewRequest(http.MethodPost, e.endpoint.Path(), bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer hk-test")
+	req.Header.Set("Content-Type", contentType)
+	rec := httptest.NewRecorder()
+	middleware.RequestID(h).ServeHTTP(rec, req)
+	return rec
+}
+
+func newImageKeywordScreener() moderation.Screener {
+	return moderation.NewScreener(moderation.ScreenerDeps{
+		Config:   imageModerationConfig{cfg: moderation.ModerationConfig{Enabled: true, FailClosed: true}},
+		Keywords: imageModerationKeywords{rules: []moderation.KeywordRule{{ID: 9, Keyword: "forbidden"}}},
+	})
+}
+
+type imageModerationConfig struct {
+	cfg moderation.ModerationConfig
+}
+
+func (s imageModerationConfig) GetConfig(context.Context, int64) (moderation.ModerationConfig, error) {
+	return s.cfg, nil
+}
+
+type imageModerationKeywords struct {
+	rules []moderation.KeywordRule
+}
+
+func (s imageModerationKeywords) ListEnabled(context.Context, int64) ([]moderation.KeywordRule, error) {
+	return s.rules, nil
 }

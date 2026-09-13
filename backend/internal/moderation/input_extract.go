@@ -17,18 +17,38 @@ type extractedInput struct {
 }
 
 func extractModerationInput(protocol string, body []byte) (extractedInput, error) {
+	if !registeredProtocol(protocol) {
+		return extractedInput{}, errModerationInput
+	}
 	if len(bytes.TrimSpace(body)) == 0 {
+		if protocolAllowsEmptyText(protocol) {
+			return extractedInput{}, nil
+		}
 		return extractedInput{}, errModerationInput
 	}
 	switch protocol {
-	case "openai_chat":
+	case ProtocolOpenAIChat, ProtocolAnthropicMessages:
 		return extractMessageInput(body, protocol)
-	case "anthropic_messages":
-		return extractMessageInput(body, protocol)
-	case "openai_responses":
+	case ProtocolOpenAIResponses:
 		return extractResponsesInput(body)
-	case "gemini":
+	case ProtocolGemini:
 		return extractGeminiInput(body)
+	case ProtocolOpenAICompletions:
+		return extractCompletionsInput(body)
+	case ProtocolOpenAIEmbeddings:
+		return extractEmbeddingsInput(body)
+	case ProtocolOpenAIRerank:
+		return extractRerankInput(body)
+	case ProtocolOpenAIImages:
+		return extractImagesInput(body)
+	case ProtocolOpenAIAudioSpeech:
+		return extractAudioSpeechInput(body)
+	case ProtocolOpenAIAudioTranscript:
+		return extractAudioTranscriptInput(body)
+	case ProtocolOpenAIVideo:
+		return extractVideoInput(body)
+	case ProtocolMediaTask:
+		return extractMediaTaskInput(body)
 	default:
 		return extractedInput{}, errModerationInput
 	}

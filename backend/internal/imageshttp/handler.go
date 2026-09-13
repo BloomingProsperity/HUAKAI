@@ -20,6 +20,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/imagepricing"
 	"github.com/BloomingProsperity/HUAKAI/internal/modality"
+	"github.com/BloomingProsperity/HUAKAI/internal/moderation"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/quotaenforce"
@@ -76,6 +77,8 @@ type Deps struct {
 	RetryBudget retryBudgetGate
 	// SameAccountTransientRetries 返回交付前同号瞬时重试次数,nil/0=立刻换号。
 	SameAccountTransientRetries func(context.Context) int
+	// ModerationScreener 在预扣费与出站前扫描用户可控文本；nil 放行。
+	ModerationScreener moderation.Screener
 }
 
 type execution struct {
@@ -185,6 +188,9 @@ func newHandler(d Deps, endpoint imageEndpoint) http.HandlerFunc {
 			settlementIntent: settlementintent.NewTracker(d.SettlementIntents, d.SettlementIntentEnabled),
 		}
 		if !ex.prepareRoute(w) || !ex.validateFamilyConstraints(w) {
+			return
+		}
+		if !ex.screenInbound(w) {
 			return
 		}
 		ex.run(w)
@@ -332,4 +338,16 @@ func (ex *execution) activateAttempt(attempt router.AttemptPlan) {
 
 type retryBudgetGate interface {
 	Allow(tenantID int64) bool
+}
+
+func (ex *execution) screenInbound(w http.ResponseWriter) bool {
+	return moderation.ApplyHTTP(w, ex.ctx, ex.d.ModerationScreener, moderation.ScreenRequest{
+		TenantID:       ex.ident.TenantID,
+		APIKeyID:       ex.ident.APIKeyID,
+		UserID:         ex.ident.UserID,
+		RequestID:      ex.requestID,
+		PayloadHash:    ex.payloadHash,
+		ClientProtocol: moderation.ProtocolOpenAIImages,
+		Body:           imageScreenBody(ex.req, ex.body),
+	})
 }

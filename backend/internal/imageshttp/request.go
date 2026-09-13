@@ -257,3 +257,18 @@ func bodyHash(body []byte) string {
 	sum := sha256.Sum256(body)
 	return hex.EncodeToString(sum[:])
 }
+
+func imageScreenBody(req imageRequest, original []byte) []byte {
+	if json.Valid(bytes.TrimSpace(original)) {
+		return original
+	}
+	payload := map[string]string{}
+	if prompt := strings.TrimSpace(req.PromptText()); prompt != "" {
+		payload["prompt"] = prompt
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return []byte(`{}`)
+	}
+	return raw
+}
