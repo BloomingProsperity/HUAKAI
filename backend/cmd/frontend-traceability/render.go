@@ -50,7 +50,7 @@ func render(rows []row) []byte {
 	}
 
 	b.WriteString("\n## 4. 前端需求 → 后端缺口\n\n")
-	b.WriteString("下列需求当前没有可安全消费的完整 operation，前端不得用 mock、跨权限拼装或本地状态冒充完成。\n\n")
+	b.WriteString("下列需求仍有后端缺口，或仅后端已挂、前端待接线；前端不得用 mock、跨权限拼装或本地状态冒充完成。已挂载的 operation 见第 3 节。\n\n")
 	b.WriteString("| 缺口编号 | 优先级 | 页面 | 后端模块 | 前端需要的结果 | 当前事实 |\n")
 	b.WriteString("| --- | --- | --- | --- | --- | --- |\n")
 	for _, item := range gaps {
