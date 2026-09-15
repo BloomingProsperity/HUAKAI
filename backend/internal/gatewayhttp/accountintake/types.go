@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/codexagent"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/intake"
 	"github.com/BloomingProsperity/HUAKAI/internal/subscriptionprofile"
 )
@@ -23,12 +24,19 @@ var (
 	ErrCodexLaneMany                      = errors.New("multiple codex routing lanes require explicit selection")
 	ErrImportCredentialRefreshUnavailable = errors.New("account intake credential refresher unavailable")
 	ErrImportCredentialRefreshFailed      = errors.New("account intake credential refresh failed")
+	ErrAgentIdentityMintUnavailable       = errors.New("account intake agent identity mint unavailable")
+	ErrAgentIdentityMintFailed            = errors.New("account intake agent identity mint failed")
 )
 
 const accountIntakeContentLimit = 2 << 20
 
 type AgentTaskRegistrar interface {
 	EnsureTask(context.Context, []byte) ([]byte, error)
+}
+
+// AgentRuntimeRegistrar 用一个有效 ChatGPT 会话 access_token 向上游铸出 agent_runtime_id。
+type AgentRuntimeRegistrar interface {
+	RegisterRuntime(context.Context, codexagent.RegisterRuntimeInput) (string, error)
 }
 
 type ProxyMaterial struct {
@@ -85,7 +93,10 @@ type AccountDefaults struct {
 	PoolMode                 *bool           `json:"pool_mode,omitempty"`
 	TempUnschedulableEnabled *bool           `json:"temp_unschedulable_enabled,omitempty"`
 	TempUnschedulableRules   json.RawMessage `json:"temp_unschedulable_rules,omitempty"`
-	Proxy                    *ProxyMaterial  `json:"-"`
+	// MintAgentIdentity 为真时,OpenAI 会话号导入会先用会话就地铸一个 Agent Identity 再落库,
+	// 从而任何 ChatGPT 号(含 free)无需接码即可转 API;默认关,不改动既有会话导入行为。
+	MintAgentIdentity bool           `json:"mint_agent_identity,omitempty"`
+	Proxy             *ProxyMaterial `json:"-"`
 }
 
 type PlanInput struct {
